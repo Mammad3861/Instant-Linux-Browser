@@ -1,0 +1,14 @@
+# Logs
+*.log
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Docker-specific (if you run tests locally)
+.docker/
+node_modules/
+
+# Script temporary files
+*.tmp
+*.swp
