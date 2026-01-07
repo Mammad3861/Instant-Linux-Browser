@@ -3,8 +3,9 @@
 # ==========================================================
 # Project: Linux Browser Suite (Docker-based)
 # Author: Mammad3861
-# Description: Interactive script to install/uninstall 
-#              web-based browsers (Chromium/Firefox)
+# Version: 1.0.2
+# Description: Automated deployment for kasmweb-based containers.
+# Compatible with: Ubuntu 20.04+, Debian 11+
 # ==========================================================
 
 # UI Colors
