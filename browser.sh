@@ -32,6 +32,12 @@ install_browser() {
     local PORT=$3
     local SSL_PORT=$((PORT + 1))
     
+    # Check architecture
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
+        echo -e "${YELLOW}Note: You are on ARM architecture. Firefox is recommended for better stability.${NC}"
+    fi
+
     if docker ps -a | grep -q "$BROWSER"; then
         echo -e "${RED}Error: $BROWSER is already running.${NC}"
     else
