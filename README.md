@@ -48,6 +48,7 @@ If you encounter a "Connection Refused" error:
 ## ⚠️ Known Issues
 
 SSL Warning: Since the script uses self-signed certificates for HTTPS, your browser will show a warning. Click Advanced and then Proceed to [IP] (unsafe).
+
 Chromium on ARM: Some ARM kernels may have strict sandbox restrictions causing a black screen. Firefox is the stable alternative for these environments.
 
 # ​📄 License
