@@ -19,11 +19,13 @@ Run this single command on your Ubuntu/Debian server to start the manager:
 bash <(curl -fsSL [https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh](https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh))
 ```
 
-🛠 Available Options
+# 🛠 Available Options
 ​Install Chromium: Accessible on port 3000.
 ​Install Firefox: Accessible on port 4000.
 ​Uninstall: Completely removes containers and cleans up.
-​📱 Mobile Friendly
+
+# ​📱 Mobile Friendly
 ​Designed to be managed via mobile SSH clients like Termius or JuiceSSH. Once installed, access your server-side browser from any mobile web browser.
-​📄 License
+
+# ​📄 License
 ​This project is under the MIT License.
