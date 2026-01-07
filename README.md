@@ -13,6 +13,18 @@ A professional, interactive Bash script to deploy fully functional, web-accessib
 </p>
 
 ---
+## 🖥️ Architecture Compatibility
+
+This project supports both **x86_64** (Intel/AMD) and **ARM64** (Hetzner ARM, Oracle Ampere, Raspberry Pi) architectures.
+
+| Browser | x86_64 (Standard) | ARM64 (aarch64) |
+| :--- | :---: | :---: |
+| **Firefox** | ✅ Stable | ✅ Highly Recommended |
+| **Chromium** | ✅ Stable | ⚠️ Experimental |
+
+> **Note for ARM Users:** If you are using Hetzner ARM or Oracle Cloud Ampere, we strongly recommend deploying **Firefox** for the best performance and stability.
+>
+---
 
 ## 🚀 Quick Installation
 
