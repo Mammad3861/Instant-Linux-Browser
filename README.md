@@ -16,7 +16,7 @@ A professional, interactive Bash script to deploy fully functional, web-accessib
 Run this single command on your Ubuntu/Debian server to start the manager:
 
 ```bash
-bash <(curl -fsSL [https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh](https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh))
+bash <(curl -fsSL (https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh))
 ```
 
 # 🛠 Available Options
