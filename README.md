@@ -13,18 +13,6 @@ A professional, interactive Bash script to deploy fully functional, web-accessib
 </p>
 
 ---
-## 🖥️ Architecture Compatibility
-
-This project supports both **x86_64** (Intel/AMD) and **ARM64** (Hetzner ARM, Oracle Ampere, Raspberry Pi) architectures.
-
-| Browser | x86_64 (Standard) | ARM64 (aarch64) |
-| :--- | :---: | :---: |
-| **Firefox** | ✅ Stable | ✅ Highly Recommended |
-| **Chromium** | ✅ Stable | ⚠️ Experimental |
-
-> **Note for ARM Users:** If you are using Hetzner ARM or Oracle Cloud Ampere, we strongly recommend deploying **Firefox** for the best performance and stability.
->
----
 
 ## 🚀 Quick Installation
 
@@ -57,6 +45,9 @@ If you encounter a "Connection Refused" error:
 2. Check if Docker is running using `sudo systemctl status docker`.
 3. View container logs with `docker logs chromium` or `docker logs firefox`.
 
+##⚠️ Known Issues
+SSL Warning: Since the script uses self-signed certificates for HTTPS, your browser will show a warning. Click Advanced and then Proceed to [IP] (unsafe).
+Chromium on ARM: Some ARM kernels may have strict sandbox restrictions causing a black screen. Firefox is the stable alternative for these environments.
 
 # ​📄 License
 ​This project is under the MIT License.
