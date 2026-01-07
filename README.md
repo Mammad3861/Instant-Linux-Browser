@@ -4,10 +4,9 @@ A professional, interactive Bash script to deploy fully functional, web-accessib
 
 ## ✨ Features
 - **Interactive Menu:** Easily install or uninstall browsers.
-- **Auto Timezone:** Automatically detects your server's timezone.
 - **Secure Access:** Supports custom usernames and passwords for the Web-GUI.
 - **One-Line Setup:** No manual configuration needed.
-- **Persistent Data:** Configurations and history are saved in `/root/`.
+
 
 ---
 
