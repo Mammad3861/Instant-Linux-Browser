@@ -8,9 +8,8 @@ A professional, interactive Bash script to deploy fully functional, web-accessib
 - **One-Line Setup:** No manual configuration needed.
 
 
-![Project Screenshot](preview.jpg)
 <p align="center">
-  <img src="assets/preview.png" width="600" title="Project Preview">
+  <img src="preview.jpg" width="600" title="Project Preview">
 </p>
 
 ---
