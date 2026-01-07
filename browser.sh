@@ -2,8 +2,7 @@
 
 # ==========================================================
 # Project: Instant Linux Browser (Docker-based)
-# Author: Mammad3861
-# Version: 1.0.5
+# Version: 1.0.6 - Stability Update
 # ==========================================================
 
 RED='\033[0;31m'
@@ -38,19 +37,26 @@ install_browser() {
     else
         read -p "Enter Username (default: admin): " USERNAME
         USERNAME=${USERNAME:-admin}
-        read -p "Enter Password: " PASSWORD # نمایش پسورد موقع تایپ برای راحتی
+        read -p "Enter Password: " PASSWORD
         echo -e "\n"
 
         check_docker
 
         echo -e "${YELLOW}Deploying $BROWSER... Please wait.${NC}"
+        
+        # حذف تنظیمات قبلی برای اطمینان از سلامت فایل‌ها
+        rm -rf "/root/${BROWSER}/config"
+
         docker run -d \
             --name=$BROWSER \
             --privileged \
+            --ipc=host \
+            --security-opt seccomp=unconfined \
             -e PUID=1000 -e PGID=1000 \
             -e TZ=$SERVER_TZ \
             -e CUSTOM_USER=$USERNAME \
             -e PASSWORD=$PASSWORD \
+            -e CHROME_FLAGS="--no-sandbox --disable-dev-shm-usage" \
             -p ${PORT}:3000 \
             -p ${SSL_PORT}:3001 \
             -v "/root/${BROWSER}/config:/config" \
@@ -61,19 +67,19 @@ install_browser() {
         IP=$(curl -4 -s ifconfig.me)
         
         echo -e "${GREEN}================================================${NC}"
-        echo -e "${GREEN}Deployment Successful!${NC}"
-        echo -e "Access URL (HTTP) : ${CYAN}http://${IP}:${PORT}${NC}"
+        echo -e "Deployment Successful!"
         echo -e "Access URL (HTTPS): ${CYAN}https://${IP}:${SSL_PORT}${NC}"
         echo -e "Credentials       : ${YELLOW}$USERNAME / $PASSWORD${NC}"
+        echo -e "${YELLOW}Wait 10 seconds, then refresh your browser.${NC}"
         echo -e "${GREEN}================================================${NC}"
     fi
 }
 
 uninstall_browser() {
     local BROWSER=$1
-    echo -e "${YELLOW}Cleaning up $BROWSER...${NC}"
     docker stop $BROWSER && docker rm $BROWSER
-    echo -e "${GREEN}Done.${NC}"
+    rm -rf "/root/${BROWSER}"
+    echo -e "${GREEN}$BROWSER removed.${NC}"
 }
 
 clear
