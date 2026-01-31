@@ -19,7 +19,8 @@ Useful when you want remote browser access from a phone or laptop while managing
 Run this on an Ubuntu/Debian server:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh)```
+bash <(curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh)
+```
 
 ## Available Options
 Install Chromium (port 3000)
@@ -40,11 +41,13 @@ If you see “Connection refused”:
 Make sure ports 3000 / 4000 are open in your firewall/security group.
 Check Docker:
 ```Bash
-sudo systemctl status docker```
+sudo systemctl status docker
+```
 Check container logs:
 ```Bash
 docker logs chromium
-docker logs firefox```
+docker logs firefox
+```
 ## Known Issues
 Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
 Chromium on ARM: Some ARM kernels may restrict sandboxing and cause a black screen. Firefox is usually the safer option.
