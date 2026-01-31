@@ -24,8 +24,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Bro
 
 ## Available Options
 Install Chromium (port 3000)
+
 Install Firefox (port 4000)
+
 Uninstall (removes containers and related files)
+
 ## Security Notes
 If you expose the service to the internet:
 Use a strong password (12+ characters).
@@ -50,6 +53,7 @@ docker logs firefox
 ```
 ## Known Issues
 Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
+
 Chromium on ARM: Some ARM kernels may restrict sandboxing and cause a black screen. Firefox is usually the safer option.
 ## License
 MIT
