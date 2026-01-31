@@ -3,7 +3,7 @@
 # ==========================================================
 # Project: Instant Linux Browser (Docker-based)
 # Author: Mammad3861
-# Version: 1.0.7 - Browser Launch Fix
+# Version: 1.1.0 - Permission + Security + UX Fixes
 # Description: Automated deployment for web-based browsers.
 # ==========================================================
 
@@ -27,8 +27,47 @@ check_docker() {
     if ! command -v docker &> /dev/null; then
         echo -e "${YELLOW}Docker not found. Installing...${NC}"
         curl -fsSL https://get.docker.com -o get-docker.sh
-        sudo sh get-docker.sh && rm get-docker.sh
+        sh get-docker.sh && rm -f get-docker.sh
     fi
+}
+
+# Resolve PUID/PGID (prefer the sudo user; fallback safely)
+resolve_puid_pgid() {
+    local puid pgid
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        puid=$(id -u "$SUDO_USER" 2>/dev/null)
+        pgid=$(id -g "$SUDO_USER" 2>/dev/null)
+    fi
+
+    if [[ -z "${puid:-}" || -z "${pgid:-}" ]]; then
+        if command -v getent >/dev/null 2>&1 && getent passwd 1000 >/dev/null 2>&1; then
+            puid=1000
+            pgid=$(getent passwd 1000 | cut -d: -f4)
+        else
+            puid=0
+            pgid=0
+        fi
+    fi
+
+    echo "$puid:$pgid"
+}
+
+# Safer config base dir (not under /root)
+CONFIG_BASE="/opt/instant-linux-browser"
+
+# Detect a usable IP for display (local first, then public)
+detect_ip() {
+    local ip
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    if [[ -z "$ip" ]]; then
+        ip=$(curl -4 -s --max-time 4 ifconfig.me 2>/dev/null)
+    fi
+    echo "${ip:-YOUR_SERVER_IP}"
+}
+
+# Exact container-name existence check (avoid grep partial matches)
+container_exists() {
+    docker ps -a --format '{{.Names}}' 2>/dev/null | grep -xq "$1"
 }
 
 install_browser() {
@@ -36,46 +75,61 @@ install_browser() {
     local IMAGE=$2
     local PORT=$3
     local SSL_PORT=$((PORT + 1))
-    
-    if docker ps -a | grep -q "$BROWSER"; then
+
+    if container_exists "$BROWSER"; then
         echo -e "${RED}Error: $BROWSER is already running.${NC}"
     else
         echo -e "${CYAN}--- Configuration for $BROWSER ---${NC}"
         read -p "Enter UI Username (default: admin): " USERNAME
         USERNAME=${USERNAME:-admin}
-        read -p "Enter UI Password: " PASSWORD
+        read -s -p "Enter UI Password: " PASSWORD
         echo -e "\n"
 
         check_docker
 
         echo -e "${YELLOW}Deploying $BROWSER... Please wait.${NC}"
-        
+
         # Chromium requires specific flags to run in Docker environments
         local CHROME_STABILITY_FLAGS=""
+        local EXTRA_CAPS=()
+        local EXTRA_SECURITY=()
+
         if [[ "$BROWSER" == "chromium" ]]; then
             CHROME_STABILITY_FLAGS="--no-sandbox --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage --disable-setuid-sandbox"
+            # Safer alternative to --privileged for chromium container needs:
+            EXTRA_CAPS+=(--cap-add=SYS_ADMIN)
+            EXTRA_SECURITY+=(--security-opt seccomp=unconfined)
         fi
+
+        local PUID_PGID
+        PUID_PGID="$(resolve_puid_pgid)"
+        local PUID="${PUID_PGID%%:*}"
+        local PGID="${PUID_PGID##*:}"
+
+        # Prepare config directory with correct permissions
+        local CONFIG_DIR="${CONFIG_BASE}/${BROWSER}/config"
+        mkdir -p "$CONFIG_DIR"
+        chown -R "${PUID}:${PGID}" "${CONFIG_BASE}/${BROWSER}" 2>/dev/null || true
 
         docker run -d \
             --name=$BROWSER \
-            --privileged \
-            --ipc=host \
-            --security-opt seccomp=unconfined \
-            -e PUID=1000 -e PGID=1000 \
+            "${EXTRA_CAPS[@]}" \
+            "${EXTRA_SECURITY[@]}" \
+            -e PUID=$PUID -e PGID=$PGID \
             -e TZ=$SERVER_TZ \
             -e CUSTOM_USER=$USERNAME \
             -e PASSWORD=$PASSWORD \
             -e CHROME_FLAGS="$CHROME_STABILITY_FLAGS" \
             -p ${PORT}:3000 \
             -p ${SSL_PORT}:3001 \
-            -v "/root/${BROWSER}/config:/config" \
+            -v "${CONFIG_DIR}:/config" \
             --shm-size="2gb" \
             --restart unless-stopped \
             $IMAGE
 
         # Get IPv4 address
-        IP=$(curl -4 -s ifconfig.me)
-        
+        IP=$(detect_ip)
+
         echo -e "${GREEN}================================================${NC}"
         echo -e "${GREEN}Deployment Successful!${NC}"
         echo -e "Access URL (HTTP) : ${CYAN}http://${IP}:${PORT}${NC}"
@@ -89,15 +143,14 @@ install_browser() {
 uninstall_browser() {
     local BROWSER=$1
     echo -e "${YELLOW}Removing $BROWSER...${NC}"
-    docker stop $BROWSER && docker rm $BROWSER
+    docker stop "$BROWSER" >/dev/null 2>&1 || true
+    docker rm "$BROWSER" >/dev/null 2>&1 || true
     echo -e "${GREEN}Cleanup complete.${NC}"
 }
 
-# Main Menu
-clear
+# Display Menu
 echo -e "${CYAN}==========================================${NC}"
-echo -e "       INSTANT LINUX BROWSER SUITE        "
-echo -e "       Server TZ: ${YELLOW}$SERVER_TZ${NC}       "
+echo -e "${GREEN}     Instant Linux Browser Installer${NC}"
 echo -e "${CYAN}==========================================${NC}"
 echo -e "1) Install Chromium (Port 3000)"
 echo -e "2) Uninstall Chromium"
