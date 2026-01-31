@@ -1,12 +1,12 @@
-# 🌐 Instant Linux Browser
+# Instant Linux Browser
 
-A professional, interactive Bash script to deploy fully functional, web-accessible browsers (Chromium & Firefox) on your Linux server using Docker. Perfectly optimized for mobile management via SSH.
+A Bash script that deploys web-accessible browsers (Chromium and Firefox) on a Linux server using Docker.  
+Useful when you want remote browser access from a phone or laptop while managing a server via SSH.
 
-## ✨ Features
-- **Interactive Menu:** Easily install or uninstall browsers.
-- **Secure Access:** Supports custom usernames and passwords for the Web-GUI.
-- **One-Line Setup:** No manual configuration needed.
-
+## Features
+- Interactive install/uninstall menu
+- Optional username/password for the web UI
+- Quick setup (single command)
 
 <p align="center">
   <img src="preview.jpg" width="600" title="Project Preview">
@@ -14,42 +14,39 @@ A professional, interactive Bash script to deploy fully functional, web-accessib
 
 ---
 
-## 🚀 Quick Installation
+## Quick Installation
 
-Run this single command on your Ubuntu/Debian server to start the manager:
+Run this on an Ubuntu/Debian server:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh)
-```
+bash <(curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh)```
 
-# 🛠 Available Options
-​Install Chromium: Accessible on port 3000.
-​Install Firefox: Accessible on port 4000.
-​Uninstall: Completely removes containers and cleans up.
-
-## 🔒 Security Recommendations
-For production environments, it is highly recommended to:
-- Use a strong password (at least 12 characters).
-- Run the browser behind a Reverse Proxy (like Nginx or Traefik) to enable HTTPS.
-- Use a Firewall (UFW/IPTables) to restrict access to specific IP addresses if possible.
-
-## ⚙️ Advanced Configuration
-The script automatically handles the following environment variables for optimal performance:
-- `PUID/PGID`: Set to 1000 for proper permission handling.
-- `shm-size`: Allocated 1GB to prevent tab crashing in Chromium.
-- `seccomp`: Configured to allow secure browser sandboxing.
-
-## 🛠 Troubleshooting
-If you encounter a "Connection Refused" error:
-1. Ensure the ports (3000 for Chromium, 4000 for Firefox) are open in your server's security group/firewall.
-2. Check if Docker is running using `sudo systemctl status docker`.
-3. View container logs with `docker logs chromium` or `docker logs firefox`.
-
-## ⚠️ Known Issues
-
-SSL Warning: Since the script uses self-signed certificates for HTTPS, your browser will show a warning. Click Advanced and then Proceed to [IP] (unsafe).
-
-Chromium on ARM: Some ARM kernels may have strict sandbox restrictions causing a black screen. Firefox is the stable alternative for these environments.
-
-# ​📄 License
-​This project is under the MIT License.
+## Available Options
+Install Chromium (port 3000)
+Install Firefox (port 4000)
+Uninstall (removes containers and related files)
+## Security Notes
+If you expose the service to the internet:
+Use a strong password (12+ characters).
+Put it behind a reverse proxy (Nginx/Traefik) and enable HTTPS.
+Restrict access with a firewall (UFW/IPTables) and/or IP allow-listing.
+## Advanced Configuration
+The script sets some defaults to improve stability:
+PUID/PGID set to 1000 (permissions)
+--shm-size set to 1g (helps prevent browser tab crashes)
+seccomp settings to support browser sandboxing in Docker
+Troubleshooting
+If you see “Connection refused”:
+Make sure ports 3000 / 4000 are open in your firewall/security group.
+Check Docker:
+```Bash
+sudo systemctl status docker```
+Check container logs:
+```Bash
+docker logs chromium
+docker logs firefox```
+## Known Issues
+Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
+Chromium on ARM: Some ARM kernels may restrict sandboxing and cause a black screen. Firefox is usually the safer option.
+## License
+MIT
