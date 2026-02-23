@@ -73,10 +73,9 @@ Known Issues
 
   Chromium Black Screen (ARM/AMD): Some kernels restrict sandboxing and cause a black screen. Firefox is usually the safer option. If you still prefer Chromium and get a black screen, run this command manually on your server to force it to start:
     
-    ```Bash
-
+    
     docker exec -it chromium bash -c "DISPLAY=:1 chromium-browser --no-sandbox"
-    ```
+    
     
 
 License
