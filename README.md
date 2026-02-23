@@ -24,54 +24,54 @@ bash <(curl -fsSL [https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Br
 
 Available Options
 
-    Install Chromium (port 3000)
+  Install Chromium (port 3000)
 
-    Install Firefox (port 4000)
+  Install Firefox (port 4000)
 
-    Uninstall (removes containers and related files)
+  Uninstall (removes containers and related files)
 
 Security Notes
 
 If you expose the service to the internet:
 
-    Use a strong password (12+ characters).
+  Use a strong password (12+ characters).
 
-    Put it behind a reverse proxy (Nginx/Traefik) and enable HTTPS.
+  Put it behind a reverse proxy (Nginx/Traefik) and enable HTTPS.
 
-    Restrict access with a firewall (UFW/IPTables) and/or IP allow-listing.
+  Restrict access with a firewall (UFW/IPTables) and/or IP allow-listing.
 
 Advanced Configuration
 
 The script sets some defaults to improve stability:
 
-    PUID/PGID set to 1000 (permissions)
+  PUID/PGID set to 1000 (permissions)
 
-    --shm-size set to 1gb (helps prevent browser tab crashes)
+  --shm-size set to 1gb (helps prevent browser tab crashes)
 
-    seccomp settings to support browser sandboxing in Docker
+  seccomp settings to support browser sandboxing in Docker
 
 Troubleshooting
 
 If you see “Connection refused”:
 
-    Make sure ports 3000 / 4000 are open in your firewall/security group.
+  Make sure ports 3000 / 4000 are open in your firewall/security group.
 
-    Check Docker:
-    Bash
-
+  Check Docker:
+    ```Bash
     sudo systemctl status docker
+    ```
 
-    Check container logs:
-    Bash
-
+  Check container logs:
+    ```Bash
     docker logs chromium
     docker logs firefox
+    ```
 
 Known Issues
 
-    Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
+  Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
 
-    Chromium Black Screen (ARM/AMD): Some kernels restrict sandboxing and cause a black screen. Firefox is usually the safer option. If you still prefer Chromium and get a black screen, run this command manually on your server to force it to start:
+  Chromium Black Screen (ARM/AMD): Some kernels restrict sandboxing and cause a black screen. Firefox is usually the safer option. If you still prefer Chromium and get a black screen, run this command manually on your server to force it to start:
     
     ```Bash
 
