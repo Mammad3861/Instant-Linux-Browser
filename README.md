@@ -57,12 +57,12 @@ If you see “Connection refused”:
   Make sure ports 3000 / 4000 are open in your firewall/security group.
 
   Check Docker:
-    ```Bash
+    ```
     sudo systemctl status docker
     ```
 
   Check container logs:
-    ```Bash
+    ```
     docker logs chromium
     docker logs firefox
     ```
