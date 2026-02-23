@@ -19,41 +19,66 @@ Useful when you want remote browser access from a phone or laptop while managing
 Run this on an Ubuntu/Debian server:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh)
+bash <(curl -fsSL [https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh](https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh))
 ```
 
-## Available Options
-Install Chromium (port 3000)
+Available Options
 
-Install Firefox (port 4000)
+    Install Chromium (port 3000)
 
-Uninstall (removes containers and related files)
+    Install Firefox (port 4000)
 
-## Security Notes
+    Uninstall (removes containers and related files)
+
+Security Notes
+
 If you expose the service to the internet:
-Use a strong password (12+ characters).
-Put it behind a reverse proxy (Nginx/Traefik) and enable HTTPS.
-Restrict access with a firewall (UFW/IPTables) and/or IP allow-listing.
-## Advanced Configuration
-The script sets some defaults to improve stability:
-PUID/PGID set to 1000 (permissions)
---shm-size set to 1g (helps prevent browser tab crashes)
-seccomp settings to support browser sandboxing in Docker
-Troubleshooting
-If you see “Connection refused”:
-Make sure ports 3000 / 4000 are open in your firewall/security group.
-Check Docker:
-```Bash
-sudo systemctl status docker
-```
-Check container logs:
-```Bash
-docker logs chromium
-docker logs firefox
-```
-## Known Issues
-Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
 
-Chromium on ARM: Some ARM kernels may restrict sandboxing and cause a black screen. Firefox is usually the safer option.
-## License
+    Use a strong password (12+ characters).
+
+    Put it behind a reverse proxy (Nginx/Traefik) and enable HTTPS.
+
+    Restrict access with a firewall (UFW/IPTables) and/or IP allow-listing.
+
+Advanced Configuration
+
+The script sets some defaults to improve stability:
+
+    PUID/PGID set to 1000 (permissions)
+
+    --shm-size set to 1gb (helps prevent browser tab crashes)
+
+    seccomp settings to support browser sandboxing in Docker
+
+Troubleshooting
+
+If you see “Connection refused”:
+
+    Make sure ports 3000 / 4000 are open in your firewall/security group.
+
+    Check Docker:
+    Bash
+
+    sudo systemctl status docker
+
+    Check container logs:
+    Bash
+
+    docker logs chromium
+    docker logs firefox
+
+Known Issues
+
+    Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
+
+    Chromium Black Screen (ARM/AMD): Some kernels restrict sandboxing and cause a black screen. Firefox is usually the safer option. If you still prefer Chromium and get a black screen, run this command manually on your server to force it to start:
+    
+    ```Bash
+
+    docker exec -it chromium bash -c "DISPLAY=:1 chromium-browser --no-sandbox"
+    ```
+    
+
+License
+
 MIT
