@@ -11,7 +11,7 @@ Perfect for accessing a full desktop browser remotely via your phone or laptop w
 <p align="center">
   <img src="preview.jpg" width="600" title="Project Preview">
 </p>
----
+
 
 ## 🚀 Quick Installation
 
