@@ -1,83 +1,72 @@
-# Instant Linux Browser
+# 🌐 Instant Linux Browser
 
-A Bash script that deploys web-accessible browsers (Chromium and Firefox) on a Linux server using Docker.  
-Useful when you want remote browser access from a phone or laptop while managing a server via SSH.
+A lightweight Bash script to deploy web-accessible browsers (Chromium & Firefox) on any Linux server using Docker.  
+Perfect for accessing a full desktop browser remotely via your phone or laptop while managing servers over SSH.
 
-## Features
-- Interactive install/uninstall menu
-- Optional username/password for the web UI
-- Quick setup (single command)
-
+## ✨ Features
+- ✅ **Interactive Menu:** Easy install/uninstall management.
+- 🔒 **Security:** Optional password protection for the Web UI.
+- ⚡ **Lightweight:** Optimized container settings for low resource usage.
+- 🚀 **One-Command Setup:** Get up and running in seconds.
 <p align="center">
   <img src="preview.jpg" width="600" title="Project Preview">
 </p>
-
 ---
 
-## Quick Installation
+## 🚀 Quick Installation
 
-Run this on an Ubuntu/Debian server:
+Run this command on your Ubuntu/Debian server:
 
 ```bash
-bash <(curl -fsSL [https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh](https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh))
+curl -fsSL [https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh](https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh) | bash
 ```
 
-## Available Options
+## 🛠 Available Options
 
-  Install Chromium (port 3000)
+  Install Chromium: Accessible on port 3000
 
-  Install Firefox (port 4000)
+  Install Firefox: Accessible on port 4000
 
-  Uninstall (removes containers and related files)
+  Uninstall: Completely removes containers and clean up files.
 
-## Security Notes
+## 🔒 Security Recommendations
 
-If you expose the service to the internet:
+If exposing this service to the public internet:
 
-  Use a strong password (12+ characters).
+  Strong Passwords: Use at least 12+ characters.
 
-  Put it behind a reverse proxy (Nginx/Traefik) and enable HTTPS.
+  Reverse Proxy: Use Nginx or Traefik with HTTPS (SSL).
 
-  Restrict access with a firewall (UFW/IPTables) and/or IP allow-listing.
+  Firewall: Restrict access using UFW or IP allow-listing.
 
-## Advanced Configuration
+## ⚙️ Advanced Configuration
 
-The script sets some defaults to improve stability:
+The script applies these optimizations by default:
 
-  PUID/PGID set to 1000 (permissions)
+  PUID/PGID: Set to 1000 for consistent permissions.
 
-  --shm-size set to 1gb (helps prevent browser tab crashes)
+  Shared Memory: --shm-size set to 1gb to prevent browser crashes.
 
-  seccomp settings to support browser sandboxing in Docker
+  Sandboxing: Seccomp profiles enabled for enhanced security.
 
-## Troubleshooting
+## 🔍 Troubleshooting
 
-If you see “Connection refused”:
+  Connection Refused? Ensure ports 3000/4000 are open in your cloud provider's firewall.
 
-  Make sure ports 3000 / 4000 are open in your firewall/security group.
+  Check Status: ```sudo docker ps```
 
-  Check Docker:
-    ```
-    sudo systemctl status docker
-    ```
+  View Logs: ```docker logs chromium``` or ```docker logs firefox```
 
-  Check container logs:
-    ```
-    docker logs chromium
-    docker logs firefox
-    ```
+## ⚠️ Known Issues
 
-## Known Issues
-
-  Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
+  SSL Warning: If you use a self-signed certificate, the browser may show a warning.
 
   Chromium Black Screen (ARM/AMD): Some kernels restrict sandboxing and cause a black screen. Firefox is usually the safer option. If you still prefer Chromium and get a black screen, run this command manually on your server to force it to start:
-    
-    
-    docker exec -it chromium bash -c "DISPLAY=:1 chromium-browser --no-sandbox"
-    
-    
 
-## License
+```Bash
+docker exec -it chromium bash -c "DISPLAY=:1 chromium-browser --no-sandbox"
+```
+
+## 📄 License
 
 MIT
