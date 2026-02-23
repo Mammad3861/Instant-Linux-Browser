@@ -18,7 +18,7 @@ Perfect for accessing a full desktop browser remotely via your phone or laptop w
 Run this command on your Ubuntu/Debian server:
 
 ```bash
-curl -fsSL [https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh](https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh) | bash
+curl -fsSL (https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh) | bash
 ```
 
 ## 🛠 Available Options
