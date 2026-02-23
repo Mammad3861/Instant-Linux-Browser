@@ -22,7 +22,7 @@ Run this on an Ubuntu/Debian server:
 bash <(curl -fsSL [https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh](https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh))
 ```
 
-Available Options
+## Available Options
 
   Install Chromium (port 3000)
 
@@ -30,7 +30,7 @@ Available Options
 
   Uninstall (removes containers and related files)
 
-Security Notes
+## Security Notes
 
 If you expose the service to the internet:
 
@@ -40,7 +40,7 @@ If you expose the service to the internet:
 
   Restrict access with a firewall (UFW/IPTables) and/or IP allow-listing.
 
-Advanced Configuration
+## Advanced Configuration
 
 The script sets some defaults to improve stability:
 
@@ -50,7 +50,7 @@ The script sets some defaults to improve stability:
 
   seccomp settings to support browser sandboxing in Docker
 
-Troubleshooting
+## Troubleshooting
 
 If you see “Connection refused”:
 
@@ -67,7 +67,7 @@ If you see “Connection refused”:
     docker logs firefox
     ```
 
-Known Issues
+## Known Issues
 
   Browser SSL warning: If you use a self-signed certificate, the browser may show a warning.
 
@@ -78,6 +78,6 @@ Known Issues
     
     
 
-License
+## License
 
 MIT
