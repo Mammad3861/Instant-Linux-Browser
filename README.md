@@ -18,24 +18,32 @@ It is useful when you need a full browser available over SSH-managed infrastruct
 
 ## Quick Installation
 
-Run this command on an Ubuntu/Debian server:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo bash
-```
-
-You can also download the script first and run it:
+For interactive setup, download the script first and then run it:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh
 sudo bash browser.sh
 ```
 
-For unattended server setup, provide credentials through environment variables:
+For a one-line non-interactive Chromium install:
 
 ```bash
-sudo ILB_USERNAME=admin ILB_PASSWORD='change-this-password' bash browser.sh
+curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium bash
 ```
+
+For a one-line non-interactive Firefox install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-firefox bash
+```
+
+For unattended Chromium setup with credentials:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium ILB_USERNAME=admin ILB_PASSWORD='change-this-password' bash
+```
+
+Plain `curl ... | sudo bash` is not supported for the interactive menu. In that mode Bash reads the script from stdin, so the menu cannot safely read your choice from the same stream. Download the script first for menu mode, or pass `ILB_ACTION` for a pipe install.
 
 ## Available Options
 
@@ -44,11 +52,29 @@ sudo ILB_USERNAME=admin ILB_PASSWORD='change-this-password' bash browser.sh
 - Uninstall Chromium or Firefox containers.
 - Run browser diagnostics.
 
+Actions can be passed as either the first argument or `ILB_ACTION`:
+
+```bash
+sudo bash browser.sh install-chromium
+sudo bash browser.sh uninstall-chromium
+sudo bash browser.sh install-firefox
+sudo bash browser.sh uninstall-firefox
+sudo bash browser.sh diagnostics
+sudo ILB_ACTION=diagnostics bash browser.sh
+```
+
 ## Server Setup
 
 The script is Docker-first. Chromium and Firefox run inside containers, so the host does not need a locally installed browser.
 
-On Ubuntu/Debian, the script installs host packages commonly required by headless Chromium and automation tools:
+By default, the script installs only host packages it needs to run, such as `curl` and `ca-certificates` when Docker installation requires them.
+If you also want host packages commonly required by local headless Chromium and automation tools, opt in with `ILB_INSTALL_HOST_DEPS=1`:
+
+```bash
+sudo ILB_INSTALL_HOST_DEPS=1 bash browser.sh install-chromium
+```
+
+Optional host dependency list:
 
 ```text
 ca-certificates curl fonts-liberation libasound2t64/libasound2

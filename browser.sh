@@ -57,13 +57,14 @@ success() {
     echo -e "${GREEN}$*${NC}"
 }
 
-# Root check
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-    die "This script must be run with sudo or as root."
-fi
-
 # Detect Timezone
 SERVER_TZ=$(cat /etc/timezone 2>/dev/null || echo "Etc/UTC")
+
+require_root() {
+    if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+        die "This action must be run with sudo or as root."
+    fi
+}
 
 is_debian_like() {
     command -v apt-get >/dev/null 2>&1
@@ -71,16 +72,6 @@ is_debian_like() {
 
 apt_package_exists() {
     apt-cache show "$1" >/dev/null 2>&1
-}
-
-append_if_available() {
-    local package=$1
-    local target_name=$2
-    if apt_package_exists "$package"; then
-        eval "$target_name+=(\"$package\")"
-        return 0
-    fi
-    return 1
 }
 
 install_apt_packages() {
@@ -105,11 +96,15 @@ install_headless_chromium_deps() {
     apt-get update || die "apt-get update failed. Check DNS, apt mirrors, or outbound network access."
 
     # Ubuntu 24.04+ ships libasound2t64, while older Debian/Ubuntu releases use libasound2.
-    if ! append_if_available "libasound2t64" packages; then
-        append_if_available "libasound2" packages || warn "Neither libasound2t64 nor libasound2 was found in apt metadata."
+    if apt_package_exists "libasound2t64"; then
+        packages+=("libasound2t64")
+    elif apt_package_exists "libasound2"; then
+        packages+=("libasound2")
+    else
+        warn "Neither libasound2t64 nor libasound2 was found in apt metadata."
     fi
 
-    info "Installing host packages commonly required by headless Chromium..."
+    info "Installing optional host packages commonly required by headless Chromium..."
     apt-get install -y --no-install-recommends "${packages[@]}" || die "Failed to install required Chromium host packages: ${packages[*]}"
 }
 
@@ -261,6 +256,7 @@ install_browser() {
     local port=$3
     local ssl_port=$((port + 1))
 
+    require_root
     ensure_docker_ready
 
     if container_exists "$browser"; then
@@ -289,7 +285,11 @@ install_browser() {
     fi
 
     if [[ "$browser" == "chromium" ]]; then
-        install_headless_chromium_deps
+        if [[ "${ILB_INSTALL_HOST_DEPS:-0}" == "1" ]]; then
+            install_headless_chromium_deps
+        else
+            info "Skipping optional host Chromium libraries. Set ILB_INSTALL_HOST_DEPS=1 to install them."
+        fi
         print_browser_diagnostics
     fi
 
@@ -354,6 +354,7 @@ install_browser() {
 uninstall_browser() {
     local browser=$1
     info "Removing $browser..."
+    require_root
     ensure_docker_ready
     docker stop "$browser" >/dev/null 2>&1 || true
     docker rm "$browser" >/dev/null 2>&1 || true
@@ -373,15 +374,71 @@ show_menu() {
     echo -e "${CYAN}==========================================${NC}"
 }
 
-show_menu
-read -r -p "Select an option [1-6]: " choice
+print_usage() {
+    echo "Usage:"
+    echo "  sudo bash browser.sh"
+    echo "  sudo bash browser.sh install-chromium"
+    echo "  sudo bash browser.sh uninstall-chromium"
+    echo "  sudo bash browser.sh install-firefox"
+    echo "  sudo bash browser.sh uninstall-firefox"
+    echo "  sudo bash browser.sh diagnostics"
+    echo
+    echo "Environment action examples:"
+    echo "  sudo ILB_ACTION=install-chromium bash browser.sh"
+    echo "  curl -fsSL URL/browser.sh | sudo ILB_ACTION=install-chromium bash"
+}
 
-case "$choice" in
-    1) install_browser "chromium" "lscr.io/linuxserver/chromium:latest" "3000" ;;
-    2) uninstall_browser "chromium" ;;
-    3) install_browser "firefox" "lscr.io/linuxserver/firefox:latest" "4000" ;;
-    4) uninstall_browser "firefox" ;;
-    5) print_browser_diagnostics ;;
-    6) exit 0 ;;
-    *) die "Invalid option: ${choice:-empty}" ;;
-esac
+normalize_action() {
+    local action=$1
+    case "$action" in
+        1|chromium|install-chromium) echo "install-chromium" ;;
+        2|uninstall-chromium) echo "uninstall-chromium" ;;
+        3|firefox|install-firefox) echo "install-firefox" ;;
+        4|uninstall-firefox) echo "uninstall-firefox" ;;
+        5|diagnostics|diag) echo "diagnostics" ;;
+        6|exit|quit) echo "exit" ;;
+        *) return 1 ;;
+    esac
+}
+
+resolve_action() {
+    local action="${ILB_ACTION:-}"
+
+    if [[ -z "$action" && $# -gt 0 ]]; then
+        action=$1
+    fi
+
+    if [[ -z "$action" ]]; then
+        if [[ -t 0 ]]; then
+            show_menu
+            read -r -p "Select an option [1-6]: " action
+        else
+            echo -e "${RED}Error: no action was provided and stdin is not interactive.${NC}" >&2
+            echo "The interactive menu cannot work with plain 'curl ... | sudo bash' because the script is read from stdin." >&2
+            echo "Download the script first and run 'sudo bash browser.sh', or pass an action with ILB_ACTION." >&2
+            echo "Example: curl -fsSL URL/browser.sh | sudo ILB_ACTION=install-chromium bash" >&2
+            return 1
+        fi
+    fi
+
+    normalize_action "$action" || {
+        echo -e "${RED}Error: invalid action '${action:-empty}'.${NC}" >&2
+        print_usage >&2
+        return 1
+    }
+}
+
+dispatch_action() {
+    local action=$1
+    case "$action" in
+        install-chromium) install_browser "chromium" "lscr.io/linuxserver/chromium:latest" "3000" ;;
+        uninstall-chromium) uninstall_browser "chromium" ;;
+        install-firefox) install_browser "firefox" "lscr.io/linuxserver/firefox:latest" "4000" ;;
+        uninstall-firefox) uninstall_browser "firefox" ;;
+        diagnostics) print_browser_diagnostics ;;
+        exit) exit 0 ;;
+    esac
+}
+
+resolved_action=$(resolve_action "$@") || exit 1
+dispatch_action "$resolved_action"
