@@ -3,7 +3,7 @@
 # ==========================================================
 # Project: Instant Linux Browser (Docker-based)
 # Author: Mammad3861
-# Version: 1.2.0 - Stable interactive menu + amd64/arm64 support
+# Version: 1.2.1 - Stable menu/curl dispatch + Docker reliability fixes
 # Description: Deploy web-accessible Chromium and Firefox containers.
 # ==========================================================
 
@@ -79,7 +79,7 @@ install_basic_packages() {
 
     export DEBIAN_FRONTEND=noninteractive
     apt-get update || die "apt-get update failed. Check DNS, apt mirrors, or outbound network access."
-    apt-get install -y --no-install-recommends ca-certificates curl || die "Failed to install ca-certificates/curl."
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg || die "Failed to install ca-certificates/curl/gnupg."
 }
 
 check_docker() {
@@ -87,14 +87,18 @@ check_docker() {
         return 0
     fi
 
-    warn "Docker not found. Installing Docker..."
-    if ! command -v curl >/dev/null 2>&1; then
-        install_basic_packages
+    if ! is_debian_like; then
+        die "Docker is not installed. Install Docker for this Linux distribution, then run this script again."
     fi
 
-    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh || die "Failed to download Docker installer."
-    sh /tmp/get-docker.sh || die "Docker installer failed. Install Docker manually and run this script again."
-    rm -f /tmp/get-docker.sh
+    warn "Docker not found. Installing Docker from the Ubuntu/Debian package repositories..."
+    install_basic_packages
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y docker.io || die "Failed to install Docker. Install Docker manually and run this script again."
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable docker >/dev/null 2>&1 || true
+    fi
 }
 
 ensure_docker_ready() {
@@ -151,28 +155,52 @@ container_running() {
 
 check_port_available() {
     local port="$1"
-    if command -v ss >/dev/null 2>&1 && ss -ltn "( sport = :$port )" 2>/dev/null | grep -q ":$port"; then
+    if command -v ss >/dev/null 2>&1 && ss -ltnH "sport = :$port" 2>/dev/null | grep -q .; then
+        die "Port $port is already in use. Stop the existing service or edit the port in browser.sh."
+    fi
+
+    if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        die "Port $port is already in use. Stop the existing service or edit the port in browser.sh."
+    fi
+
+    if command -v netstat >/dev/null 2>&1 && netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"; then
+        die "Port $port is already in use. Stop the existing service or edit the port in browser.sh."
+    fi
+
+    if docker ps --format '{{.Ports}}' 2>/dev/null | grep -Eq "(^|[[:space:],])[^[:space:],]*:${port}->"; then
         die "Port $port is already in use. Stop the existing service or edit the port in browser.sh."
     fi
 }
 
-show_arch_info() {
-    local arch
-    arch="$(uname -m 2>/dev/null || echo unknown)"
+normalize_arch() {
+    local arch="${1:-}"
     case "$arch" in
         x86_64|amd64)
-            info "Detected architecture: amd64"
+            echo "amd64"
             ;;
         aarch64|arm64)
-            info "Detected architecture: arm64"
-            ;;
-        armv7l|armhf|armv6l)
-            warn "Detected architecture: $arch. This project is intended for amd64 and arm64. Docker image support may be limited."
+            echo "arm64"
             ;;
         *)
-            warn "Detected architecture: $arch. Docker will try to pull a compatible image automatically."
+            echo "unsupported"
             ;;
     esac
+}
+
+detect_arch() {
+    uname -m 2>/dev/null || echo unknown
+}
+
+show_arch_info() {
+    local raw_arch normalized_arch
+    raw_arch="$(detect_arch)"
+    normalized_arch="$(normalize_arch "$raw_arch")"
+
+    if [[ "$normalized_arch" == "unsupported" ]]; then
+        die "Unsupported architecture: $raw_arch. Instant Linux Browser supports amd64/x86_64 and arm64/aarch64 Linux servers."
+    fi
+
+    info "Detected architecture: $normalized_arch ($raw_arch)"
 }
 
 install_browser() {
@@ -192,15 +220,19 @@ install_browser() {
     check_port_available "$ssl_port"
 
     echo -e "${CYAN}--- Configuration for $browser ---${NC}"
-    local username="${ILB_USERNAME:-}"
-    local password="${ILB_PASSWORD:-}"
+    local username=""
+    local password=""
 
-    if [[ -z "$username" ]]; then
+    if [[ -n "${ILB_USERNAME+x}" ]]; then
+        username="$ILB_USERNAME"
+    else
         username=$(prompt_text "Enter UI Username (default: admin): " "admin")
     fi
     username="${username:-admin}"
 
-    if [[ -z "$password" ]]; then
+    if [[ -n "${ILB_PASSWORD+x}" ]]; then
+        password="$ILB_PASSWORD"
+    else
         password=$(prompt_secret "Enter UI Password: ")
     fi
 
@@ -229,6 +261,7 @@ install_browser() {
         extra_caps+=(--cap-add=SYS_ADMIN)
         extra_security+=(--security-opt seccomp=unconfined)
         browser_env+=(-e "CHROME_CLI=$CHROMIUM_FLAGS" -e "CHROME_FLAGS=$CHROMIUM_FLAGS")
+        info "Applying Chromium flags through CHROME_CLI and CHROME_FLAGS: $CHROMIUM_FLAGS"
     fi
 
     info "Deploying $browser... Please wait."
@@ -248,7 +281,12 @@ install_browser() {
         --shm-size="2gb" \
         --restart unless-stopped \
         "$image"; then
-        die "Docker failed to start $browser. Check ports, image availability, and Docker permissions."
+        echo "Docker failed to start $browser."
+        if container_exists "$browser"; then
+            echo "Recent logs:"
+            docker logs --tail 80 "$browser" 2>/dev/null || true
+        fi
+        die "Check ports, image availability, Docker permissions, and the logs above if present."
     fi
 
     sleep 4
@@ -277,11 +315,13 @@ uninstall_browser() {
     ensure_docker_ready
     docker stop "$browser" >/dev/null 2>&1 || true
     docker rm "$browser" >/dev/null 2>&1 || true
-    success "Cleanup complete."
+    success "Cleanup complete. Persistent config was kept at ${CONFIG_BASE}/${browser}/config."
 }
 
 show_status() {
     ensure_docker_ready
+    show_arch_info
+    echo -e "${CYAN}Config base:${NC} ${CONFIG_BASE}"
     echo -e "${CYAN}--- Containers ---${NC}"
     docker ps -a --filter "name=chromium" --filter "name=firefox" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 }
