@@ -90,7 +90,10 @@ bash -n "$SCRIPT"
 NO_ACTION_OUTPUT="$TEMP_DIR/no-action.out"
 if (
     source "$SCRIPT"
-    TTY_INPUT=""
+    if [[ -n "$TTY_FD" ]]; then
+        exec {TTY_FD}>&-
+    fi
+    TTY_FD=""
     main
 ) > "$NO_ACTION_OUTPUT" 2>&1; then
     fail "A non-interactive run without an action succeeded"
@@ -107,6 +110,10 @@ DIAGNOSTICS_OUTPUT="$TEMP_DIR/diagnostics.out"
 PATH="$MOCK_BIN:$PATH" bash "$SCRIPT" diagnostics > "$DIAGNOSTICS_OUTPUT" 2>&1
 PATH="$MOCK_BIN:$PATH" ILB_ACTION=diagnostics bash "$SCRIPT" > /dev/null 2>&1
 assert_contains "--- Containers ---" "$DIAGNOSTICS_OUTPUT"
+
+PIPED_DIAGNOSTICS_OUTPUT="$TEMP_DIR/piped-diagnostics.out"
+cat "$SCRIPT" | PATH="$MOCK_BIN:$PATH" ILB_ACTION=diagnostics bash > "$PIPED_DIAGNOSTICS_OUTPUT" 2>&1
+assert_contains "--- Containers ---" "$PIPED_DIAGNOSTICS_OUTPUT"
 assert_not_contains "apt-get" "$MOCK_LOG"
 assert_not_contains "systemctl" "$MOCK_LOG"
 

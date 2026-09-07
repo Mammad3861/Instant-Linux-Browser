@@ -25,21 +25,11 @@ Use only `raw.githubusercontent.com` URLs for curl commands. Do not use normal G
 
 ### One-command interactive installer
 
-After this branch is merged into `main`:
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo bash
 ```
 
 The script reads menu choices and credentials from your controlling terminal, so this remains interactive even though the script is streamed through standard input.
-
-### Branch validation
-
-Before merge, after `fix/chromium-runtime-debug` is pushed, use this branch URL on a VPS:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/fix/chromium-runtime-debug/browser.sh | sudo bash
-```
 
 ### Download first
 

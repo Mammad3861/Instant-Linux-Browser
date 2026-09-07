@@ -31,11 +31,10 @@ require_root() {
 # Detect Timezone
 SERVER_TZ=$(cat /etc/timezone 2>/dev/null || echo "Etc/UTC")
 
-# Use the real terminal for prompts. This keeps the menu working even when
-# the script is executed with: curl -fsSL .../browser.sh | sudo bash
-TTY_INPUT=""
-if [[ -r /dev/tty && -w /dev/tty ]]; then
-    TTY_INPUT="/dev/tty"
+# Open the controlling terminal once so streamed scripts can still prompt.
+TTY_FD=""
+if { exec {TTY_FD}<>/dev/tty; } 2>/dev/null; then
+    :
 fi
 
 prompt_text() {
@@ -43,9 +42,9 @@ prompt_text() {
     local default_value="${2:-}"
     local value=""
 
-    if [[ -n "$TTY_INPUT" ]]; then
-        printf "%s" "$prompt" > "$TTY_INPUT"
-        read -r value < "$TTY_INPUT"
+    if [[ -n "$TTY_FD" ]]; then
+        printf "%s" "$prompt" >&"$TTY_FD"
+        read -r value <&"$TTY_FD"
     else
         read -r value || true
     fi
@@ -57,10 +56,10 @@ prompt_secret() {
     local prompt="$1"
     local value=""
 
-    if [[ -n "$TTY_INPUT" ]]; then
-        printf "%s" "$prompt" > "$TTY_INPUT"
-        read -r -s value < "$TTY_INPUT"
-        printf "\n" > "$TTY_INPUT"
+    if [[ -n "$TTY_FD" ]]; then
+        printf "%s" "$prompt" >&"$TTY_FD"
+        read -r -s value <&"$TTY_FD"
+        printf "\n" >&"$TTY_FD"
     else
         read -r -s value || true
         printf "\n"
@@ -180,7 +179,7 @@ verify_chromium_startup() {
     local secret="${1:-}"
     local attempt
 
-    for attempt in 1 2 3 4 5; do
+    for ((attempt = 1; attempt <= 30; attempt++)); do
         if ! container_running chromium; then
             print_chromium_failure "the Docker container exited" "$secret"
             return 1
@@ -393,9 +392,9 @@ show_menu() {
 
 read_menu_choice() {
     local choice=""
-    if [[ -n "$TTY_INPUT" ]]; then
-        printf "Select an option [1-6]: " > "$TTY_INPUT"
-        read -r choice < "$TTY_INPUT"
+    if [[ -n "$TTY_FD" ]]; then
+        printf "Select an option [1-6]: " >&"$TTY_FD"
+        read -r choice <&"$TTY_FD"
     else
         die "No action and no controlling terminal. Use ILB_ACTION=install-chromium or download the script first."
     fi
@@ -437,7 +436,7 @@ main() {
         return
     fi
 
-    if [[ -z "$TTY_INPUT" ]]; then
+    if [[ -z "$TTY_FD" ]]; then
         die "No action and no controlling terminal. Use ILB_ACTION=install-chromium or download the script first."
     fi
 
@@ -446,6 +445,6 @@ main() {
     run_action "$action"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "$0" ]]; then
     main "$@"
 fi
