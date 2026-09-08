@@ -146,6 +146,10 @@ container_running() {
     [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" == "true" ]]
 }
 
+run_docker_diagnostics() {
+    timeout 5 docker "$@"
+}
+
 chromium_process_running() {
     docker exec "$1" sh -c 'ps -eo comm=,args= 2>/dev/null | grep -Eq "[c]hromium|[c]hrome"' >/dev/null 2>&1
 }
@@ -343,8 +347,8 @@ install_browser() {
 
     success "================================================"
     success "Deployment Successful!"
-    echo -e "Access URL (HTTP) : ${CYAN}http://${ip}:${port}${NC}"
-    echo -e "Access URL (HTTPS): ${CYAN}https://${ip}:${ssl_port}${NC}"
+    echo -e "Browser URL (HTTPS): ${CYAN}https://${ip}:${ssl_port}${NC}"
+    echo -e "HTTP (proxy-only) : ${CYAN}http://${ip}:${port}${NC}"
     echo -e "Credentials       : ${YELLOW}configured for $username${NC}"
     echo -e "${YELLOW}Note: Accept the SSL warning in your browser.${NC}"
     success "================================================"
@@ -361,6 +365,8 @@ uninstall_browser() {
 }
 
 show_diagnostics() {
+    local status
+
     show_arch_info
     echo -e "${CYAN}Config base:${NC} ${CONFIG_BASE}"
     if ! command -v docker >/dev/null 2>&1; then
@@ -368,22 +374,45 @@ show_diagnostics() {
         return 0
     fi
 
-    if ! docker info >/dev/null 2>&1; then
-        echo "Docker: installed but not reachable"
+    if ! command -v timeout >/dev/null 2>&1; then
+        echo "Docker: diagnostics timeout command is unavailable"
         return 0
     fi
 
+    echo "Checking Docker daemon (up to 5 seconds)..."
+    if run_docker_diagnostics info >/dev/null 2>&1; then
+        :
+    else
+        status=$?
+        if [[ "$status" -eq 124 ]]; then
+            echo "Docker: daemon check timed out after 5 seconds"
+        else
+            echo "Docker: installed but not reachable"
+        fi
+        return 0
+    fi
+
+    echo "Docker: reachable"
     echo -e "${CYAN}--- Containers ---${NC}"
-    docker ps -a --filter "name=chromium" --filter "name=firefox" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    if run_docker_diagnostics ps -a --filter "name=chromium" --filter "name=firefox" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'; then
+        :
+    else
+        status=$?
+        if [[ "$status" -eq 124 ]]; then
+            echo "Docker: container query timed out after 5 seconds"
+        else
+            echo "Docker: container query failed"
+        fi
+    fi
 }
 
 show_menu() {
     echo -e "${CYAN}==========================================${NC}"
     echo -e "${GREEN}     Instant Linux Browser Installer${NC}"
     echo -e "${CYAN}==========================================${NC}"
-    echo -e "1) Install Chromium (HTTP 3000 / HTTPS 3001)"
+    echo -e "1) Install Chromium (HTTPS 3001; HTTP 3000 proxy-only)"
     echo -e "2) Uninstall Chromium"
-    echo -e "3) Install Firefox (HTTP 4000 / HTTPS 4001)"
+    echo -e "3) Install Firefox (HTTPS 4001; HTTP 4000 proxy-only)"
     echo -e "4) Uninstall Firefox"
     echo -e "5) Diagnostics"
     echo -e "6) Exit"

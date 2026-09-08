@@ -12,8 +12,8 @@ It keeps an interactive menu for installing, uninstalling, checking status, and 
 
 - Interactive Bash menu for install, uninstall, status, and exit.
 - Chromium and Firefox containers from linuxserver.io.
-- Chromium HTTP on `3000` and HTTPS on `3001`.
-- Firefox HTTP on `4000` and HTTPS on `4001`.
+- Chromium HTTPS on `3001`; HTTP on `3000` is for a reverse proxy only.
+- Firefox HTTPS on `4001`; HTTP on `4000` is for a reverse proxy only.
 - Persistent config in `/opt/instant-linux-browser/<browser>/config`.
 - Username/password prompts, with `ILB_USERNAME` and `ILB_PASSWORD` overrides.
 - Supports amd64/x86_64 and arm64/aarch64 Linux servers when the upstream image supports them.
@@ -30,6 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/ma
 ```
 
 The script reads menu choices and credentials from your controlling terminal, so this remains interactive even though the script is streamed through standard input.
+
+Use the HTTPS browser URL shown after installation. The HTTP URL is for a reverse proxy only.
 
 ### Download first
 

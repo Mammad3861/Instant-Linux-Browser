@@ -85,6 +85,21 @@ esac
 MOCK_DOCKER
 chmod +x "$MOCK_BIN/docker"
 
+cat > "$MOCK_BIN/timeout" <<'MOCK_TIMEOUT'
+#!/usr/bin/env bash
+set -eu
+
+seconds="$1"
+shift
+
+if [[ "${MOCK_DOCKER_INFO_TIMEOUT:-0}" == "1" && "${1:-}" == "docker" && "${2:-}" == "info" ]]; then
+    exit 124
+fi
+
+exec "$@"
+MOCK_TIMEOUT
+chmod +x "$MOCK_BIN/timeout"
+
 bash -n "$SCRIPT"
 
 NO_ACTION_OUTPUT="$TEMP_DIR/no-action.out"
@@ -109,6 +124,7 @@ assert_contains "Invalid option: invalid-action" "$INVALID_OUTPUT"
 DIAGNOSTICS_OUTPUT="$TEMP_DIR/diagnostics.out"
 PATH="$MOCK_BIN:$PATH" bash "$SCRIPT" diagnostics > "$DIAGNOSTICS_OUTPUT" 2>&1
 PATH="$MOCK_BIN:$PATH" ILB_ACTION=diagnostics bash "$SCRIPT" > /dev/null 2>&1
+assert_contains "Checking Docker daemon (up to 5 seconds)..." "$DIAGNOSTICS_OUTPUT"
 assert_contains "--- Containers ---" "$DIAGNOSTICS_OUTPUT"
 
 PIPED_DIAGNOSTICS_OUTPUT="$TEMP_DIR/piped-diagnostics.out"
@@ -119,8 +135,9 @@ assert_not_contains "systemctl" "$MOCK_LOG"
 
 if command -v script >/dev/null 2>&1; then
     TTY_OUTPUT="$TEMP_DIR/tty.out"
-    printf '6\n' | script -qec "cat '$SCRIPT' | bash" /dev/null > "$TTY_OUTPUT" 2>&1 || fail "Streamed interactive menu failed"
+    printf '5\n' | PATH="$MOCK_BIN:$PATH" script -qec "cat '$SCRIPT' | bash" /dev/null > "$TTY_OUTPUT" 2>&1 || fail "Streamed interactive diagnostics failed"
     assert_contains "Instant Linux Browser Installer" "$TTY_OUTPUT"
+    assert_contains "--- Containers ---" "$TTY_OUTPUT"
 else
     echo "SKIP: streamed TTY test requires the util-linux script command"
 fi
@@ -137,6 +154,11 @@ fi
 require_root() { :; }
 detect_arch() { echo x86_64; }
 sleep() { :; }
+
+DIAGNOSTICS_TIMEOUT_OUTPUT="$TEMP_DIR/diagnostics-timeout.out"
+MOCK_DOCKER_INFO_TIMEOUT=1 show_diagnostics > "$DIAGNOSTICS_TIMEOUT_OUTPUT" 2>&1
+assert_contains "Checking Docker daemon (up to 5 seconds)..." "$DIAGNOSTICS_TIMEOUT_OUTPUT"
+assert_contains "Docker: daemon check timed out after 5 seconds" "$DIAGNOSTICS_TIMEOUT_OUTPUT"
 
 RESOLVED_IDS="$(SUDO_USER=root resolve_puid_pgid)"
 [[ "$RESOLVED_IDS" == "1000:1000" ]] || fail "Expected safe UID/GID fallback, got $RESOLVED_IDS"
