@@ -1,0 +1,18 @@
+name: Shell tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          bash -n browser.sh tests/browser_test.sh
+          bash tests/browser_test.sh

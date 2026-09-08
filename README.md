@@ -138,9 +138,10 @@ Delete those directories manually only if you no longer need the browser profile
 If exposing the browser to the public internet:
 
 - use a strong password;
-- restrict access with a firewall, VPN, or IP allow-list;
-- consider putting it behind Nginx, Traefik, or another HTTPS reverse proxy;
-- avoid exposing ports `3000`, `3001`, `4000`, or `4001` publicly unless needed.
+- do not expose HTTP port `3000` directly; use it behind a reverse proxy;
+- treat `CUSTOM_USER` and `PASSWORD` as basic protection for a trusted local network, not sufficient public Internet protection;
+- use HTTPS and a reverse proxy with robust authentication for public exposure;
+- restrict access with a firewall, VPN, or IP allow-list.
 
 Empty passwords are allowed, but the script warns when one is selected.
 
