@@ -3,7 +3,7 @@
 # ==========================================================
 # Project: Instant Linux Browser (Docker-based)
 # Author: Mammad3861
-# Version: 1.2.1 - Stable menu/curl dispatch + Docker reliability fixes
+# Version: 1.2.2 - Chromium compatibility and startup checks
 # Description: Deploy web-accessible Chromium and Firefox containers.
 # ==========================================================
 
@@ -17,26 +17,24 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 CONFIG_BASE="${CONFIG_BASE:-/opt/instant-linux-browser}"
-CHROMIUM_FLAGS="${CHROMIUM_FLAGS:---no-sandbox --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage --disable-setuid-sandbox}"
+CHROMIUM_FLAGS="${CHROMIUM_FLAGS:---no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox}"
 
 info() { echo -e "${CYAN}$*${NC}"; }
 success() { echo -e "${GREEN}$*${NC}"; }
 warn() { echo -e "${YELLOW}$*${NC}"; }
 die() { echo -e "${RED}Error: $*${NC}" >&2; exit 1; }
 
-# Root check
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-    die "This script must be run with sudo or as root. Example: curl -fsSL URL | sudo bash"
-fi
+require_root() {
+    [[ ${EUID:-$(id -u)} -eq 0 ]] || die "This action must be run with sudo or as root."
+}
 
 # Detect Timezone
 SERVER_TZ=$(cat /etc/timezone 2>/dev/null || echo "Etc/UTC")
 
-# Use the real terminal for prompts. This keeps the menu working even when
-# the script is executed with: curl -fsSL .../browser.sh | sudo bash
-TTY_INPUT=""
-if [[ -r /dev/tty ]]; then
-    TTY_INPUT="/dev/tty"
+# Open the controlling terminal once so streamed scripts can still prompt.
+TTY_FD=""
+if { exec {TTY_FD}<>/dev/tty; } 2>/dev/null; then
+    :
 fi
 
 prompt_text() {
@@ -44,10 +42,11 @@ prompt_text() {
     local default_value="${2:-}"
     local value=""
 
-    if [[ -n "$TTY_INPUT" ]]; then
-        read -r -p "$prompt" value < "$TTY_INPUT"
+    if [[ -n "$TTY_FD" ]]; then
+        printf "%s" "$prompt" >&"$TTY_FD"
+        read -r value <&"$TTY_FD"
     else
-        read -r -p "$prompt" value || true
+        read -r value || true
     fi
 
     echo "${value:-$default_value}"
@@ -57,12 +56,13 @@ prompt_secret() {
     local prompt="$1"
     local value=""
 
-    if [[ -n "$TTY_INPUT" ]]; then
-        read -r -s -p "$prompt" value < "$TTY_INPUT"
-        echo > /dev/tty
+    if [[ -n "$TTY_FD" ]]; then
+        printf "%s" "$prompt" >&"$TTY_FD"
+        read -r -s value <&"$TTY_FD"
+        printf "\n" >&"$TTY_FD"
     else
-        read -r -s -p "$prompt" value || true
-        echo
+        read -r -s value || true
+        printf "\n"
     fi
 
     echo "$value"
@@ -113,7 +113,7 @@ ensure_docker_ready() {
     docker info >/dev/null 2>&1 || die "Docker is installed but not running/reachable. Start Docker and run this script again."
 }
 
-# Resolve PUID/PGID (prefer the sudo user; fallback safely)
+# Resolve PUID/PGID (prefer the sudo user; fallback to the conventional host user)
 resolve_puid_pgid() {
     local puid pgid
     if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
@@ -121,15 +121,8 @@ resolve_puid_pgid() {
         pgid=$(id -g "$SUDO_USER" 2>/dev/null)
     fi
 
-    if [[ -z "${puid:-}" || -z "${pgid:-}" ]]; then
-        if command -v getent >/dev/null 2>&1 && getent passwd 1000 >/dev/null 2>&1; then
-            puid=1000
-            pgid=$(getent passwd 1000 | cut -d: -f4)
-        else
-            puid=0
-            pgid=0
-        fi
-    fi
+    puid="${puid:-1000}"
+    pgid="${pgid:-1000}"
 
     echo "$puid:$pgid"
 }
@@ -151,6 +144,61 @@ container_exists() {
 
 container_running() {
     [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" == "true" ]]
+}
+
+run_docker_diagnostics() {
+    timeout 5 docker "$@"
+}
+
+chromium_process_running() {
+    docker exec "$1" sh -c 'ps -eo comm=,args= 2>/dev/null | grep -Eq "[c]hromium|[c]hrome"' >/dev/null 2>&1
+}
+
+print_recent_logs() {
+    local container="$1"
+    local secret="${2:-}"
+    local line
+
+    if [[ -z "$secret" ]]; then
+        docker logs --tail 80 "$container" 2>&1 || true
+        return
+    fi
+
+    while IFS= read -r line; do
+        printf '%s\n' "${line//"$secret"/[REDACTED]}"
+    done < <(docker logs --tail 80 "$container" 2>&1 || true)
+}
+
+print_chromium_failure() {
+    local reason="$1"
+    local secret="${2:-}"
+    echo -e "${RED}Chromium startup check failed: $reason${NC}" >&2
+    echo "Recent container logs:" >&2
+    print_recent_logs chromium "$secret"
+    echo "Debug: sudo docker ps -a --filter name=chromium" >&2
+    echo "Debug: sudo docker exec chromium ps -eo pid,comm,args" >&2
+}
+
+verify_chromium_startup() {
+    local secret="${1:-}"
+    local attempt
+
+    for ((attempt = 1; attempt <= 30; attempt++)); do
+        if ! container_running chromium; then
+            print_chromium_failure "the Docker container exited" "$secret"
+            return 1
+        fi
+
+        if chromium_process_running chromium; then
+            info "Chromium process detected."
+            return 0
+        fi
+
+        sleep 1
+    done
+
+    print_chromium_failure "the container is running but no Chromium process was found" "$secret"
+    return 1
 }
 
 check_port_available() {
@@ -209,6 +257,7 @@ install_browser() {
     local port="$3"
     local ssl_port=$((port + 1))
 
+    require_root
     ensure_docker_ready
     show_arch_info
 
@@ -252,23 +301,16 @@ install_browser() {
     mkdir -p "$config_dir"
     chown -R "${puid}:${pgid}" "${CONFIG_BASE}/${browser}" 2>/dev/null || true
 
-    local extra_caps=()
-    local extra_security=()
     local browser_env=()
 
     if [[ "$browser" == "chromium" ]]; then
-        # These flags help Chromium start on restricted VPS/Docker environments.
-        extra_caps+=(--cap-add=SYS_ADMIN)
-        extra_security+=(--security-opt seccomp=unconfined)
-        browser_env+=(-e "CHROME_CLI=$CHROMIUM_FLAGS" -e "CHROME_FLAGS=$CHROMIUM_FLAGS")
+        browser_env+=(-e "PIXELFLUX_WAYLAND=false" -e "CHROME_CLI=$CHROMIUM_FLAGS" -e "CHROME_FLAGS=$CHROMIUM_FLAGS")
         info "Applying Chromium flags through CHROME_CLI and CHROME_FLAGS: $CHROMIUM_FLAGS"
     fi
 
     info "Deploying $browser... Please wait."
     if ! docker run -d \
         --name="$browser" \
-        "${extra_caps[@]}" \
-        "${extra_security[@]}" \
         -e "PUID=$puid" \
         -e "PGID=$pgid" \
         -e "TZ=$SERVER_TZ" \
@@ -284,17 +326,20 @@ install_browser() {
         echo "Docker failed to start $browser."
         if container_exists "$browser"; then
             echo "Recent logs:"
-            docker logs --tail 80 "$browser" 2>/dev/null || true
+            print_recent_logs "$browser" "$password"
         fi
         die "Check ports, image availability, Docker permissions, and the logs above if present."
     fi
 
-    sleep 4
     if ! container_running "$browser"; then
         echo -e "${RED}$browser did not start successfully.${NC}"
         echo "Recent logs:"
-        docker logs --tail 80 "$browser" 2>/dev/null || true
+        print_recent_logs "$browser" "$password"
         die "Container exited. Check the logs above."
+    fi
+
+    if [[ "$browser" == "chromium" ]]; then
+        verify_chromium_startup "$password" || die "Chromium is not ready. Check the logs and debug commands above."
     fi
 
     local ip
@@ -302,9 +347,9 @@ install_browser() {
 
     success "================================================"
     success "Deployment Successful!"
-    echo -e "Access URL (HTTP) : ${CYAN}http://${ip}:${port}${NC}"
-    echo -e "Access URL (HTTPS): ${CYAN}https://${ip}:${ssl_port}${NC}"
-    echo -e "Credentials       : ${YELLOW}$username / $password${NC}"
+    echo -e "Browser URL (HTTPS): ${CYAN}https://${ip}:${ssl_port}${NC}"
+    echo -e "HTTP (proxy-only) : ${CYAN}http://${ip}:${port}${NC}"
+    echo -e "Credentials       : ${YELLOW}configured for $username${NC}"
     echo -e "${YELLOW}Note: Accept the SSL warning in your browser.${NC}"
     success "================================================"
 }
@@ -312,39 +357,75 @@ install_browser() {
 uninstall_browser() {
     local browser="$1"
     info "Removing $browser..."
+    require_root
     ensure_docker_ready
     docker stop "$browser" >/dev/null 2>&1 || true
     docker rm "$browser" >/dev/null 2>&1 || true
     success "Cleanup complete. Persistent config was kept at ${CONFIG_BASE}/${browser}/config."
 }
 
-show_status() {
-    ensure_docker_ready
+show_diagnostics() {
+    local status
+
     show_arch_info
     echo -e "${CYAN}Config base:${NC} ${CONFIG_BASE}"
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Docker: not installed"
+        return 0
+    fi
+
+    if ! command -v timeout >/dev/null 2>&1; then
+        echo "Docker: diagnostics timeout command is unavailable"
+        return 0
+    fi
+
+    echo "Checking Docker daemon (up to 5 seconds)..."
+    if run_docker_diagnostics info >/dev/null 2>&1; then
+        :
+    else
+        status=$?
+        if [[ "$status" -eq 124 ]]; then
+            echo "Docker: daemon check timed out after 5 seconds"
+        else
+            echo "Docker: installed but not reachable"
+        fi
+        return 0
+    fi
+
+    echo "Docker: reachable"
     echo -e "${CYAN}--- Containers ---${NC}"
-    docker ps -a --filter "name=chromium" --filter "name=firefox" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+    if run_docker_diagnostics ps -a --filter "name=chromium" --filter "name=firefox" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'; then
+        :
+    else
+        status=$?
+        if [[ "$status" -eq 124 ]]; then
+            echo "Docker: container query timed out after 5 seconds"
+        else
+            echo "Docker: container query failed"
+        fi
+    fi
 }
 
 show_menu() {
     echo -e "${CYAN}==========================================${NC}"
     echo -e "${GREEN}     Instant Linux Browser Installer${NC}"
     echo -e "${CYAN}==========================================${NC}"
-    echo -e "1) Install Chromium (HTTP 3000 / HTTPS 3001)"
+    echo -e "1) Install Chromium (HTTPS 3001; HTTP 3000 proxy-only)"
     echo -e "2) Uninstall Chromium"
-    echo -e "3) Install Firefox (HTTP 4000 / HTTPS 4001)"
+    echo -e "3) Install Firefox (HTTPS 4001; HTTP 4000 proxy-only)"
     echo -e "4) Uninstall Firefox"
-    echo -e "5) Show Status"
+    echo -e "5) Diagnostics"
     echo -e "6) Exit"
     echo -e "${CYAN}==========================================${NC}"
 }
 
 read_menu_choice() {
     local choice=""
-    if [[ -n "$TTY_INPUT" ]]; then
-        read -r -p "Select an option [1-6]: " choice < "$TTY_INPUT"
+    if [[ -n "$TTY_FD" ]]; then
+        printf "Select an option [1-6]: " >&"$TTY_FD"
+        read -r choice <&"$TTY_FD"
     else
-        die "No interactive terminal was found. Download the script first and run 'sudo bash browser.sh', or run with ILB_ACTION=install-chromium."
+        die "No action and no controlling terminal. Use ILB_ACTION=install-chromium or download the script first."
     fi
     echo "$choice"
 }
@@ -365,7 +446,7 @@ run_action() {
             uninstall_browser "firefox"
             ;;
         5|status|diagnostics|diag)
-            show_status
+            show_diagnostics
             ;;
         6|exit|quit)
             exit 0
@@ -384,9 +465,15 @@ main() {
         return
     fi
 
+    if [[ -z "$TTY_FD" ]]; then
+        die "No action and no controlling terminal. Use ILB_ACTION=install-chromium or download the script first."
+    fi
+
     show_menu
     action=$(read_menu_choice)
     run_action "$action"
 }
 
-main "$@"
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
