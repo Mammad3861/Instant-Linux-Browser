@@ -138,14 +138,52 @@ if command -v script >/dev/null 2>&1; then
     printf '5\n' | PATH="$MOCK_BIN:$PATH" script -qec "cat '$SCRIPT' | bash" /dev/null > "$TTY_OUTPUT" 2>&1 || fail "Streamed interactive diagnostics failed"
     assert_contains "Instant Linux Browser Installer" "$TTY_OUTPUT"
     assert_contains "--- Containers ---" "$TTY_OUTPUT"
+
+    run_streamed_install() {
+        local input="$1"
+        local output="$2"
+        local wrapper_command streamed_command
+        shift 2
+
+        wrapper_command='source /dev/stdin; require_root() { :; }; detect_arch() { echo x86_64; }; detect_ip() { echo 127.0.0.1; }; sleep() { :; }; main'
+        printf -v streamed_command 'cat %q | bash -c %q' "$SCRIPT" "$wrapper_command"
+
+        printf '%s' "$input" | env PATH="$MOCK_BIN:$PATH" CONFIG_BASE="$TEMP_DIR/streamed-config" "$@" script -qec "$streamed_command" /dev/null > "$output" 2>&1
+    }
+
+    : > "$MOCK_LOG"
+    SEQUENTIAL_CREDENTIALS_OUTPUT="$TEMP_DIR/sequential-credentials.out"
+    run_streamed_install $'1\nstreamed-user\nstreamed-password\n' "$SEQUENTIAL_CREDENTIALS_OUTPUT" || fail "Streamed interactive credential install failed"
+    assert_contains "Enter UI Username (default: admin):" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
+    assert_contains "Enter UI Password:" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
+    # script may record pre-fed PTY input before read -s disables terminal echo.
+    assert_contains $'docker\tpull\tlscr.io/linuxserver/chromium:latest' "$MOCK_LOG"
+    assert_contains $'docker\trun' "$MOCK_LOG"
+    assert_contains $'CUSTOM_USER=streamed-user' "$MOCK_LOG"
+
+    : > "$MOCK_LOG"
+    USERNAME_ONLY_OUTPUT="$TEMP_DIR/username-only.out"
+    run_streamed_install $'1\npassword-only\n' "$USERNAME_ONLY_OUTPUT" ILB_USERNAME=provided-user || fail "Streamed password prompt with ILB_USERNAME failed"
+    assert_not_contains "Enter UI Username" "$USERNAME_ONLY_OUTPUT"
+    assert_contains "Enter UI Password:" "$USERNAME_ONLY_OUTPUT"
+    assert_contains $'CUSTOM_USER=provided-user' "$MOCK_LOG"
+
+    : > "$MOCK_LOG"
+    ENV_CREDENTIALS_OUTPUT="$TEMP_DIR/env-credentials.out"
+    run_streamed_install $'1\n' "$ENV_CREDENTIALS_OUTPUT" ILB_USERNAME=environment-user ILB_PASSWORD=environment-password || fail "Environment credential install failed"
+    assert_not_contains "Enter UI Username" "$ENV_CREDENTIALS_OUTPUT"
+    assert_not_contains "Enter UI Password" "$ENV_CREDENTIALS_OUTPUT"
+    assert_contains $'CUSTOM_USER=environment-user' "$MOCK_LOG"
 else
-    echo "SKIP: streamed TTY test requires the util-linux script command"
+    echo "SKIP: streamed TTY tests require the util-linux script command"
 fi
 
 export PATH="$MOCK_BIN:$PATH"
 export MOCK_LOG
 export CONFIG_BASE="$TEMP_DIR/config"
 source "$SCRIPT"
+
+declare -f prompt_secret | grep -Fq -- 'read -r -s value' || fail "Password prompt must use silent read mode"
 
 if declare -f show_diagnostics | grep -Eq 'check_docker|ensure_docker_ready|apt-get|systemctl'; then
     fail "Diagnostics must not install or start Docker"
@@ -154,6 +192,30 @@ fi
 require_root() { :; }
 detect_arch() { echo x86_64; }
 sleep() { :; }
+
+EOF_OUTPUT="$TEMP_DIR/eof.out"
+if (
+    source "$SCRIPT"
+    if [[ -n "$TTY_FD" ]]; then
+        exec {TTY_FD}>&-
+    fi
+    TTY_FD=""
+    prompt_text username "Enter UI Username (default: admin): " "admin"
+) < /dev/null > "$EOF_OUTPUT" 2>&1; then
+    fail "Credential EOF was accepted"
+fi
+assert_contains "Username input ended or was interrupted" "$EOF_OUTPUT"
+
+DEFAULT_USERNAME_OUTPUT="$TEMP_DIR/default-username.out"
+(
+    source "$SCRIPT"
+    if [[ -n "$TTY_FD" ]]; then
+        exec {TTY_FD}>&-
+    fi
+    TTY_FD=""
+    prompt_text username "Enter UI Username (default: admin): " "admin" <<< ""
+    [[ "$username" == "admin" ]]
+) > "$DEFAULT_USERNAME_OUTPUT" 2>&1 || fail "Empty username did not use the admin default"
 
 DIAGNOSTICS_TIMEOUT_OUTPUT="$TEMP_DIR/diagnostics-timeout.out"
 MOCK_DOCKER_INFO_TIMEOUT=1 show_diagnostics > "$DIAGNOSTICS_TIMEOUT_OUTPUT" 2>&1
@@ -167,6 +229,8 @@ RESOLVED_IDS="$(SUDO_USER=root resolve_puid_pgid)"
 INSTALL_OUTPUT="$TEMP_DIR/install.out"
 ILB_USERNAME=admin ILB_PASSWORD=do-not-print-this install_browser chromium lscr.io/linuxserver/chromium:latest 3000 > "$INSTALL_OUTPUT" 2>&1
 assert_not_contains "do-not-print-this" "$INSTALL_OUTPUT"
+assert_not_contains "Enter UI Username" "$INSTALL_OUTPUT"
+assert_not_contains "Enter UI Password" "$INSTALL_OUTPUT"
 
 RUN_RECORD="$TEMP_DIR/docker-run.log"
 awk -F '\t' '$2 == "run" { print; found = 1; exit } END { exit !found }' "$MOCK_LOG" > "$RUN_RECORD" || fail "Docker run invocation was not recorded"

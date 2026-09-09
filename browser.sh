@@ -38,34 +38,48 @@ if { exec {TTY_FD}<>/dev/tty; } 2>/dev/null; then
 fi
 
 prompt_text() {
-    local prompt="$1"
-    local default_value="${2:-}"
+    local result_var="$1"
+    local prompt="$2"
+    local default_value="${3:-}"
     local value=""
 
     if [[ -n "$TTY_FD" ]]; then
         printf "%s" "$prompt" >&"$TTY_FD"
-        read -r value <&"$TTY_FD"
+        if ! IFS= read -r value <&"$TTY_FD"; then
+            die "Username input ended or was interrupted."
+        fi
     else
-        read -r value || true
+        printf "%s" "$prompt"
+        if ! IFS= read -r value; then
+            die "Username input ended or was interrupted."
+        fi
     fi
 
-    echo "${value:-$default_value}"
+    printf -v "$result_var" '%s' "${value:-$default_value}"
 }
 
 prompt_secret() {
-    local prompt="$1"
+    local result_var="$1"
+    local prompt="$2"
     local value=""
 
     if [[ -n "$TTY_FD" ]]; then
         printf "%s" "$prompt" >&"$TTY_FD"
-        read -r -s value <&"$TTY_FD"
+        if ! IFS= read -r -s value <&"$TTY_FD"; then
+            printf "\n" >&"$TTY_FD"
+            die "Password input ended or was interrupted."
+        fi
         printf "\n" >&"$TTY_FD"
     else
-        read -r -s value || true
+        printf "%s" "$prompt"
+        if ! IFS= read -r -s value; then
+            printf "\n"
+            die "Password input ended or was interrupted."
+        fi
         printf "\n"
     fi
 
-    echo "$value"
+    printf -v "$result_var" '%s' "$value"
 }
 
 is_debian_like() {
@@ -275,14 +289,14 @@ install_browser() {
     if [[ -n "${ILB_USERNAME+x}" ]]; then
         username="$ILB_USERNAME"
     else
-        username=$(prompt_text "Enter UI Username (default: admin): " "admin")
+        prompt_text username "Enter UI Username (default: admin): " "admin"
     fi
     username="${username:-admin}"
 
     if [[ -n "${ILB_PASSWORD+x}" ]]; then
         password="$ILB_PASSWORD"
     else
-        password=$(prompt_secret "Enter UI Password: ")
+        prompt_secret password "Enter UI Password: "
     fi
 
     if [[ -z "$password" ]]; then
