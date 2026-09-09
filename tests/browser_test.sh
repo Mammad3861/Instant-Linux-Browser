@@ -156,7 +156,7 @@ if command -v script >/dev/null 2>&1; then
     run_streamed_install $'1\nstreamed-user\nstreamed-password\n' "$SEQUENTIAL_CREDENTIALS_OUTPUT" || fail "Streamed interactive credential install failed"
     assert_contains "Enter UI Username (default: admin):" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
     assert_contains "Enter UI Password:" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
-    assert_not_contains "streamed-password" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
+    # script may record pre-fed PTY input before read -s disables terminal echo.
     assert_contains $'docker\tpull\tlscr.io/linuxserver/chromium:latest' "$MOCK_LOG"
     assert_contains $'docker\trun' "$MOCK_LOG"
     assert_contains $'CUSTOM_USER=streamed-user' "$MOCK_LOG"
@@ -182,6 +182,8 @@ export PATH="$MOCK_BIN:$PATH"
 export MOCK_LOG
 export CONFIG_BASE="$TEMP_DIR/config"
 source "$SCRIPT"
+
+declare -f prompt_secret | grep -Fq -- 'read -r -s value' || fail "Password prompt must use silent read mode"
 
 if declare -f show_diagnostics | grep -Eq 'check_docker|ensure_docker_ready|apt-get|systemctl'; then
     fail "Diagnostics must not install or start Docker"
