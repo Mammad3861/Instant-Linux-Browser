@@ -18,6 +18,10 @@ NC='\033[0m'
 
 CONFIG_BASE="${CONFIG_BASE:-/opt/instant-linux-browser}"
 CHROMIUM_FLAGS="${CHROMIUM_FLAGS:---no-sandbox --disable-gpu --disable-dev-shm-usage --disable-setuid-sandbox}"
+CADDY_CONTAINER="instant-linux-browser-caddy"
+CADDY_NETWORK="instant-linux-browser"
+CADDY_IMAGE="caddy:2-alpine"
+CADDY_MANAGED_LABEL="com.instant-linux-browser.managed=true"
 
 info() { echo -e "${CYAN}$*${NC}"; }
 success() { echo -e "${GREEN}$*${NC}"; }
@@ -80,6 +84,65 @@ prompt_secret() {
     fi
 
     printf -v "$result_var" '%s' "$value"
+}
+
+prompt_optional_domain() {
+    local result_var="$1"
+    local value=""
+
+    printf "Optional domain for automatic HTTPS (leave blank for IP access): " >&"$TTY_FD"
+    if ! IFS= read -r value <&"$TTY_FD"; then
+        die "Domain input ended or was interrupted."
+    fi
+
+    printf -v "$result_var" '%s' "$value"
+}
+
+validate_domain() {
+    local domain="$1"
+    local label
+    local -a labels
+
+    [[ -n "$domain" && ${#domain} -le 253 ]] || return 1
+    [[ "$domain" == *.* ]] || return 1
+    [[ "$domain" =~ ^[a-z0-9.-]+$ ]] || return 1
+    [[ "$domain" != .* && "$domain" != *. && "$domain" != *..* ]] || return 1
+    [[ ! "$domain" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+
+    case "$domain" in
+        localhost|*.localhost|*.local|*.internal|*.home.arpa)
+            return 1
+            ;;
+    esac
+
+    IFS='.' read -r -a labels <<< "$domain"
+    for label in "${labels[@]}"; do
+        [[ -n "$label" && ${#label} -le 63 ]] || return 1
+        [[ "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || return 1
+    done
+}
+
+resolve_install_domain() {
+    local result_var="$1"
+    local resolved_domain=""
+
+    if [[ -n "${ILB_DOMAIN+x}" ]]; then
+        resolved_domain="$ILB_DOMAIN"
+    elif [[ -n "$TTY_FD" ]]; then
+        prompt_optional_domain resolved_domain
+    fi
+
+    if [[ -n "$resolved_domain" ]]; then
+        resolved_domain="${resolved_domain,,}"
+        validate_domain "$resolved_domain" || die "Invalid ILB_DOMAIN value. Use a fully qualified hostname without a scheme, path, port, wildcard, or whitespace."
+    fi
+
+    printf -v "$result_var" '%s' "$resolved_domain"
+}
+
+validate_acme_email() {
+    local email="$1"
+    [[ -z "$email" || "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]]
 }
 
 is_debian_like() {
@@ -234,6 +297,311 @@ check_port_available() {
     fi
 }
 
+caddy_route_file() {
+    printf '%s/proxy/sites/%s.caddy' "$CONFIG_BASE" "$1"
+}
+
+container_is_project_managed() {
+    [[ "$(docker inspect -f '{{ index .Config.Labels "com.instant-linux-browser.managed" }}' "$1" 2>/dev/null || true)" == "true" ]]
+}
+
+network_exists() {
+    docker network inspect "$CADDY_NETWORK" >/dev/null 2>&1
+}
+
+network_is_project_managed() {
+    [[ "$(docker network inspect -f '{{ index .Labels "com.instant-linux-browser.managed" }}' "$CADDY_NETWORK" 2>/dev/null || true)" == "true" ]]
+}
+
+ensure_proxy_directories() {
+    mkdir -p \
+        "${CONFIG_BASE}/proxy/sites" \
+        "${CONFIG_BASE}/proxy/data" \
+        "${CONFIG_BASE}/proxy/config" || die "Failed to create Caddy configuration directories under ${CONFIG_BASE}/proxy."
+    chmod 700 \
+        "${CONFIG_BASE}/proxy/data" \
+        "${CONFIG_BASE}/proxy/config" || die "Failed to protect Caddy data directories under ${CONFIG_BASE}/proxy."
+}
+
+ensure_proxy_network() {
+    if network_exists; then
+        network_is_project_managed || die "A Docker network named $CADDY_NETWORK exists but is not managed by Instant Linux Browser."
+        return 0
+    fi
+
+    docker network create --label "$CADDY_MANAGED_LABEL" "$CADDY_NETWORK" >/dev/null || die "Failed to create Docker network $CADDY_NETWORK."
+}
+
+write_atomic_file() {
+    local path="$1"
+    local content="$2"
+    local temporary="${path}.tmp.$$"
+
+    if ! printf '%s' "$content" > "$temporary"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+
+    if ! mv -f -- "$temporary" "$path"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+}
+
+write_caddy_main_config() {
+    local email="$1"
+    local content
+
+    if [[ -n "$email" ]]; then
+        content=$'{\n\temail '"$email"$'\n}\n\nimport /etc/caddy/sites/*.caddy\n'
+    else
+        content=$'import /etc/caddy/sites/*.caddy\n'
+    fi
+
+    write_atomic_file "${CONFIG_BASE}/proxy/Caddyfile" "$content"
+}
+
+write_caddy_route() {
+    local browser="$1"
+    local domain="$2"
+    local route_file
+    local content
+
+    route_file="$(caddy_route_file "$browser")"
+    content="${domain} {"$'\n\treverse_proxy '"${browser}:3000"$'\n}\n'
+    write_atomic_file "$route_file" "$content"
+}
+
+configured_route_domain() {
+    local browser="$1"
+    local route_file
+    local first_line=""
+
+    route_file="$(caddy_route_file "$browser")"
+    [[ -f "$route_file" ]] || return 1
+    IFS= read -r first_line < "$route_file" || true
+    printf '%s\n' "${first_line%%[[:space:]]*}"
+}
+
+assert_domain_available() {
+    local browser="$1"
+    local domain="$2"
+    local other_browser other_domain
+
+    for other_browser in chromium firefox; do
+        [[ "$other_browser" == "$browser" ]] && continue
+        other_domain="$(configured_route_domain "$other_browser" 2>/dev/null || true)"
+        if [[ "$other_domain" == "$domain" ]]; then
+            die "Domain $domain is already assigned to $other_browser."
+        fi
+    done
+}
+
+validate_caddy_config() {
+    if container_exists "$CADDY_CONTAINER" && container_running "$CADDY_CONTAINER"; then
+        docker exec -w /etc/caddy "$CADDY_CONTAINER" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+    else
+        docker run --rm \
+            -v "${CONFIG_BASE}/proxy:/etc/caddy:ro" \
+            "$CADDY_IMAGE" \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+    fi
+}
+
+reload_caddy() {
+    docker exec -w /etc/caddy "$CADDY_CONTAINER" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+}
+
+wait_for_caddy_startup() {
+    local attempt
+
+    for attempt in {1..5}; do
+        container_running "$CADDY_CONTAINER" || return 1
+        [[ "$attempt" -eq 5 ]] && return 0
+        sleep 1
+    done
+}
+
+print_caddy_failure() {
+    local reason="$1"
+
+    echo -e "${RED}Caddy setup failed: $reason${NC}" >&2
+    if container_exists "$CADDY_CONTAINER"; then
+        echo "Recent Caddy logs:" >&2
+        docker logs --tail 80 "$CADDY_CONTAINER" 2>&1 || true
+    fi
+    echo "Debug: sudo docker logs $CADDY_CONTAINER" >&2
+    echo "Debug: sudo docker exec -w /etc/caddy $CADDY_CONTAINER caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile" >&2
+}
+
+start_or_reload_caddy() {
+    if container_exists "$CADDY_CONTAINER"; then
+        container_is_project_managed "$CADDY_CONTAINER" || return 1
+        if ! container_running "$CADDY_CONTAINER"; then
+            docker start "$CADDY_CONTAINER" >/dev/null || return 1
+            container_running "$CADDY_CONTAINER" || return 1
+        fi
+        reload_caddy
+        return
+    fi
+
+    if ! docker run -d \
+        --name="$CADDY_CONTAINER" \
+        --label "$CADDY_MANAGED_LABEL" \
+        --network="$CADDY_NETWORK" \
+        -p "80:80" \
+        -p "443:443" \
+        -v "${CONFIG_BASE}/proxy:/etc/caddy:ro" \
+        -v "${CONFIG_BASE}/proxy/data:/data" \
+        -v "${CONFIG_BASE}/proxy/config:/config" \
+        --restart unless-stopped \
+        "$CADDY_IMAGE"; then
+        return 1
+    fi
+
+    wait_for_caddy_startup
+}
+
+prepare_domain_proxy() {
+    ensure_proxy_directories
+
+    if container_exists "$CADDY_CONTAINER"; then
+        container_is_project_managed "$CADDY_CONTAINER" || die "A container named $CADDY_CONTAINER exists but is not managed by Instant Linux Browser."
+    else
+        check_port_available 80
+        check_port_available 443
+        info "Pulling $CADDY_IMAGE..."
+        docker pull "$CADDY_IMAGE" || die "Failed to pull $CADDY_IMAGE."
+    fi
+
+    ensure_proxy_network
+}
+
+restore_config_file() {
+    local path="$1"
+    local backup="$2"
+
+    if [[ -n "$backup" ]]; then
+        mv -f -- "$backup" "$path"
+    else
+        rm -f -- "$path"
+    fi
+}
+
+configure_caddy_route() {
+    local browser="$1"
+    local domain="$2"
+    local email="$3"
+    local main_file="${CONFIG_BASE}/proxy/Caddyfile"
+    local route_file
+    local main_backup=""
+    local route_backup=""
+    local caddy_preexisting=0
+
+    route_file="$(caddy_route_file "$browser")"
+    assert_domain_available "$browser" "$domain"
+
+    if [[ -f "$main_file" ]]; then
+        main_backup="${main_file}.backup.$$"
+        cp -p -- "$main_file" "$main_backup" || return 1
+    fi
+    if [[ -f "$route_file" ]]; then
+        route_backup="${route_file}.backup.$$"
+        cp -p -- "$route_file" "$route_backup" || {
+            [[ -z "$main_backup" ]] || rm -f -- "$main_backup"
+            return 1
+        }
+    fi
+    if container_exists "$CADDY_CONTAINER"; then
+        caddy_preexisting=1
+    fi
+
+    if [[ ! -f "$main_file" || -n "$email" ]]; then
+        if ! write_caddy_main_config "$email"; then
+            restore_config_file "$main_file" "$main_backup"
+            restore_config_file "$route_file" "$route_backup"
+            return 1
+        fi
+    fi
+    if ! write_caddy_route "$browser" "$domain"; then
+        restore_config_file "$main_file" "$main_backup"
+        restore_config_file "$route_file" "$route_backup"
+        return 1
+    fi
+
+    if ! validate_caddy_config; then
+        restore_config_file "$main_file" "$main_backup"
+        restore_config_file "$route_file" "$route_backup"
+        print_caddy_failure "configuration validation failed"
+        return 1
+    fi
+
+    if ! start_or_reload_caddy; then
+        restore_config_file "$main_file" "$main_backup"
+        restore_config_file "$route_file" "$route_backup"
+        print_caddy_failure "container start or reload failed"
+        if [[ "$caddy_preexisting" -eq 1 ]] && container_running "$CADDY_CONTAINER"; then
+            reload_caddy >/dev/null 2>&1 || true
+        elif container_exists "$CADDY_CONTAINER" && container_is_project_managed "$CADDY_CONTAINER"; then
+            docker rm -f "$CADDY_CONTAINER" >/dev/null 2>&1 || true
+        fi
+        return 1
+    fi
+
+    [[ -z "$main_backup" ]] || rm -f -- "$main_backup"
+    [[ -z "$route_backup" ]] || rm -f -- "$route_backup"
+}
+
+proxy_routes_remain() {
+    compgen -G "${CONFIG_BASE}/proxy/sites/*.caddy" >/dev/null
+}
+
+cleanup_proxy_network() {
+    container_exists chromium && return 0
+    container_exists firefox && return 0
+    container_exists "$CADDY_CONTAINER" && return 0
+    network_exists || return 0
+    network_is_project_managed || return 0
+    docker network rm "$CADDY_NETWORK" >/dev/null 2>&1 || true
+}
+
+remove_caddy_route() {
+    local browser="$1"
+    local route_file
+    local backup
+
+    route_file="$(caddy_route_file "$browser")"
+    [[ -f "$route_file" ]] || return 0
+    backup="${route_file}.removed.$$"
+    mv -- "$route_file" "$backup" || return 1
+
+    if proxy_routes_remain; then
+        if container_exists "$CADDY_CONTAINER"; then
+            if ! container_is_project_managed "$CADDY_CONTAINER"; then
+                mv -f -- "$backup" "$route_file"
+                return 1
+            fi
+            if ! validate_caddy_config || ! start_or_reload_caddy; then
+                mv -f -- "$backup" "$route_file"
+                reload_caddy >/dev/null 2>&1 || true
+                return 1
+            fi
+        fi
+    elif container_exists "$CADDY_CONTAINER"; then
+        if ! container_is_project_managed "$CADDY_CONTAINER"; then
+            mv -f -- "$backup" "$route_file"
+            return 1
+        fi
+        if ! docker stop "$CADDY_CONTAINER" >/dev/null || ! docker rm "$CADDY_CONTAINER" >/dev/null; then
+            mv -f -- "$backup" "$route_file"
+            docker start "$CADDY_CONTAINER" >/dev/null 2>&1 || true
+            return 1
+        fi
+    fi
+
+    rm -f -- "$backup"
+}
+
 normalize_arch() {
     local arch="${1:-}"
     case "$arch" in
@@ -270,6 +638,8 @@ install_browser() {
     local image="$2"
     local port="$3"
     local ssl_port=$((port + 1))
+    local domain=""
+    local acme_email="${ILB_ACME_EMAIL:-}"
 
     require_root
     ensure_docker_ready
@@ -299,8 +669,16 @@ install_browser() {
         prompt_secret password "Enter UI Password: "
     fi
 
+    resolve_install_domain domain
+
     if [[ -z "$password" ]]; then
         warn "Empty UI password selected. Use a firewall or reverse proxy allow-list if this server is reachable from the internet."
+    fi
+
+    if [[ -n "$domain" ]]; then
+        validate_acme_email "$acme_email" || die "Invalid ILB_ACME_EMAIL value."
+        assert_domain_available "$browser" "$domain"
+        prepare_domain_proxy
     fi
 
     info "Pulling $image..."
@@ -316,10 +694,17 @@ install_browser() {
     chown -R "${puid}:${pgid}" "${CONFIG_BASE}/${browser}" 2>/dev/null || true
 
     local browser_env=()
+    local browser_network=()
+    local browser_ports=(-p "${port}:3000" -p "${ssl_port}:3001")
 
     if [[ "$browser" == "chromium" ]]; then
         browser_env+=(-e "PIXELFLUX_WAYLAND=false" -e "CHROME_CLI=$CHROMIUM_FLAGS" -e "CHROME_FLAGS=$CHROMIUM_FLAGS")
         info "Applying Chromium flags through CHROME_CLI and CHROME_FLAGS: $CHROMIUM_FLAGS"
+    fi
+
+    if [[ -n "$domain" ]]; then
+        browser_network=(--network="$CADDY_NETWORK")
+        browser_ports=(-p "127.0.0.1:${port}:3000" -p "127.0.0.1:${ssl_port}:3001")
     fi
 
     info "Deploying $browser... Please wait."
@@ -331,8 +716,8 @@ install_browser() {
         -e "CUSTOM_USER=$username" \
         -e "PASSWORD=$password" \
         "${browser_env[@]}" \
-        -p "${port}:3000" \
-        -p "${ssl_port}:3001" \
+        "${browser_network[@]}" \
+        "${browser_ports[@]}" \
         -v "${config_dir}:/config" \
         --shm-size="2gb" \
         --restart unless-stopped \
@@ -356,26 +741,55 @@ install_browser() {
         verify_chromium_startup "$password" || die "Chromium is not ready. Check the logs and debug commands above."
     fi
 
+    if [[ -n "$domain" ]] && ! configure_caddy_route "$browser" "$domain" "$acme_email"; then
+        docker stop "$browser" >/dev/null 2>&1 || true
+        docker rm "$browser" >/dev/null 2>&1 || true
+        cleanup_proxy_network
+        die "Domain proxy setup failed. The new $browser container was removed; persistent browser and Caddy data were kept."
+    fi
+
     local ip
-    ip=$(detect_ip)
 
     success "================================================"
     success "Deployment Successful!"
-    echo -e "Browser URL (HTTPS): ${CYAN}https://${ip}:${ssl_port}${NC}"
-    echo -e "HTTP (proxy-only) : ${CYAN}http://${ip}:${port}${NC}"
+    if [[ -n "$domain" ]]; then
+        echo -e "Browser URL (HTTPS): ${CYAN}https://${domain}${NC}"
+    else
+        ip=$(detect_ip)
+        echo -e "Browser URL (HTTPS): ${CYAN}https://${ip}:${ssl_port}${NC}"
+        echo -e "HTTP (proxy-only) : ${CYAN}http://${ip}:${port}${NC}"
+    fi
     echo -e "Credentials       : ${YELLOW}configured for $username${NC}"
-    echo -e "${YELLOW}Note: Accept the SSL warning in your browser.${NC}"
+    if [[ -n "$domain" ]]; then
+        echo "Caddy manages certificate issuance and renewal for this domain."
+        warn "DNS must point to this server, and inbound ports 80 and 443 must be reachable."
+    else
+        echo -e "${YELLOW}Note: Accept the SSL warning in your browser.${NC}"
+    fi
     success "================================================"
 }
 
 uninstall_browser() {
     local browser="$1"
+    local had_domain_route=0
+
+    [[ -f "$(caddy_route_file "$browser")" ]] && had_domain_route=1
     info "Removing $browser..."
     require_root
     ensure_docker_ready
-    docker stop "$browser" >/dev/null 2>&1 || true
-    docker rm "$browser" >/dev/null 2>&1 || true
-    success "Cleanup complete. Persistent config was kept at ${CONFIG_BASE}/${browser}/config."
+    remove_caddy_route "$browser" || die "Failed to remove the $browser domain route safely. Check Caddy logs and configuration."
+    if container_exists "$browser"; then
+        docker stop "$browser" >/dev/null 2>&1 || true
+        if ! docker rm "$browser" >/dev/null 2>&1 && container_exists "$browser"; then
+            die "Failed to remove the $browser container."
+        fi
+    fi
+    cleanup_proxy_network
+    if [[ "$had_domain_route" -eq 1 ]]; then
+        success "Cleanup complete. Persistent browser and Caddy data were kept under ${CONFIG_BASE}."
+    else
+        success "Cleanup complete. Persistent config was kept at ${CONFIG_BASE}/${browser}/config."
+    fi
 }
 
 show_diagnostics() {

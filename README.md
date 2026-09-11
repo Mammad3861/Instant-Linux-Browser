@@ -16,6 +16,7 @@ It keeps an interactive menu for installing, uninstalling, checking status, and 
 - Firefox HTTPS on `4001`; HTTP on `4000` is for a reverse proxy only.
 - Persistent config in `/opt/instant-linux-browser/<browser>/config`.
 - Username/password prompts, with `ILB_USERNAME` and `ILB_PASSWORD` overrides.
+- Optional trusted HTTPS for a custom domain through the official Caddy image.
 - Supports amd64/x86_64 and arm64/aarch64 Linux servers when the upstream image supports them.
 - Keeps the one-command interactive installer and direct actions for automation.
 
@@ -58,6 +59,30 @@ You can also pass credentials:
 curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium ILB_USERNAME=admin ILB_PASSWORD='change-this-password' bash
 ```
 
+## Custom Domain HTTPS
+
+IP/port installation remains the default. To use a real domain, set `ILB_DOMAIN`; `ILB_ACME_EMAIL` is optional:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium ILB_USERNAME=admin ILB_PASSWORD='change-this-password' ILB_DOMAIN=browser.example.com ILB_ACME_EMAIL=admin@example.com bash
+```
+
+When installing interactively, you can also enter a domain after the browser credentials. Leave it blank to keep IP/port mode. Domain mode uses one shared `caddy:2-alpine` container, and Caddy automatically obtains and renews the public certificate.
+
+Before installation:
+
+- point the domain's DNS A and, when used, AAAA records to the VPS;
+- open inbound TCP ports `80` and `443`;
+- handle any existing nginx, Apache, Caddy, or other service using those ports manually;
+- remove incorrect AAAA records, because they can break certificate validation;
+- for Cloudflare, use DNS-only mode during initial certificate issuance, then enable proxying only after it is configured correctly.
+
+Domain-enabled browser ports are bound to loopback only; public traffic enters through Caddy. The browser username and password are still required. View proxy logs with:
+
+```bash
+docker logs instant-linux-browser-caddy
+```
+
 ## Direct Actions
 
 ```bash
@@ -83,6 +108,8 @@ sudo ILB_ACTION=diagnostics bash browser.sh
 - `4` - Uninstall Firefox
 - `5` - Diagnostics
 - `6` - Exit
+
+If the browser window is closed, right-click the empty desktop and select Chromium or Firefox to launch it again. Keeping the browser closed reduces active CPU and memory usage while the container remains available.
 
 ## Chromium Compatibility
 
@@ -131,9 +158,10 @@ Uninstall removes the container but keeps persistent config:
 ```text
 /opt/instant-linux-browser/chromium/config
 /opt/instant-linux-browser/firefox/config
+/opt/instant-linux-browser/proxy
 ```
 
-Delete those directories manually only if you no longer need the browser profile data.
+Domain-route cleanup reuses Caddy while another browser route remains and removes only the project-owned Caddy container after the last route is removed. Browser profiles and persistent Caddy certificate/configuration data are kept. Delete those directories manually only if you no longer need them.
 
 ## Security
 
