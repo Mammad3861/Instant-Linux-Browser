@@ -8,7 +8,8 @@ SCRIPT="$PROJECT_DIR/browser.sh"
 TEMP_DIR="$(mktemp -d)"
 MOCK_BIN="$TEMP_DIR/bin"
 MOCK_LOG="$TEMP_DIR/docker.log"
-export MOCK_LOG
+MOCK_CURL_LOG="$TEMP_DIR/curl.log"
+export MOCK_LOG MOCK_CURL_LOG
 
 cleanup() {
     rm -rf "$TEMP_DIR"
@@ -66,7 +67,11 @@ set -eu
 {
     printf 'docker'
     for argument in "$@"; do
-        printf '\t%s' "$argument"
+        if [[ "$argument" == PASSWORD=* ]]; then
+            printf '\tPASSWORD=[REDACTED]'
+        else
+            printf '\t%s' "$argument"
+        fi
     done
     printf '\n'
 } >> "$MOCK_LOG"
@@ -161,6 +166,21 @@ exec "$@"
 MOCK_TIMEOUT
 chmod +x "$MOCK_BIN/timeout"
 
+cat > "$MOCK_BIN/curl" <<'MOCK_CURL'
+#!/usr/bin/env bash
+set -eu
+
+{
+    printf 'curl'
+    printf '\t%s' "$@"
+    printf '\n'
+} >> "$MOCK_CURL_LOG"
+
+[[ "${MOCK_CURL_FAIL:-0}" != "1" ]] || exit 1
+printf '%s\n' "${MOCK_PUBLIC_IPV4-138.124.35.156}"
+MOCK_CURL
+chmod +x "$MOCK_BIN/curl"
+
 bash -n "$SCRIPT"
 
 NO_ACTION_OUTPUT="$TEMP_DIR/no-action.out"
@@ -217,11 +237,13 @@ if command -v script >/dev/null 2>&1; then
     run_streamed_install $'1\nstreamed-user\nstreamed-password\n\n' "$SEQUENTIAL_CREDENTIALS_OUTPUT" || fail "Streamed interactive credential install failed"
     assert_contains "Enter UI Username (default: admin):" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
     assert_contains "Enter UI Password:" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
-    assert_contains "Optional domain for automatic HTTPS" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
+    assert_contains "Select access mode [1]:" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
+    assert_contains "self-signed certificate" "$SEQUENTIAL_CREDENTIALS_OUTPUT"
     # script may record pre-fed PTY input before read -s disables terminal echo.
     assert_contains $'docker\tpull\tlscr.io/linuxserver/chromium:latest' "$MOCK_LOG"
     assert_contains $'docker\trun' "$MOCK_LOG"
     assert_contains $'CUSTOM_USER=streamed-user' "$MOCK_LOG"
+    assert_not_contains $'docker\tnetwork\tcreate' "$MOCK_LOG"
 
     : > "$MOCK_LOG"
     USERNAME_ONLY_OUTPUT="$TEMP_DIR/username-only.out"
@@ -235,8 +257,22 @@ if command -v script >/dev/null 2>&1; then
     run_streamed_install $'1\n' "$ENV_CREDENTIALS_OUTPUT" ILB_USERNAME=environment-user ILB_PASSWORD=environment-password ILB_DOMAIN= || fail "Environment credential install failed"
     assert_not_contains "Enter UI Username" "$ENV_CREDENTIALS_OUTPUT"
     assert_not_contains "Enter UI Password" "$ENV_CREDENTIALS_OUTPUT"
-    assert_not_contains "Optional domain for automatic HTTPS" "$ENV_CREDENTIALS_OUTPUT"
+    assert_not_contains "Select access mode" "$ENV_CREDENTIALS_OUTPUT"
     assert_contains $'CUSTOM_USER=environment-user' "$MOCK_LOG"
+
+    : > "$MOCK_LOG"
+    STREAMED_SSLIP_OUTPUT="$TEMP_DIR/streamed-sslip.out"
+    run_streamed_install $'1\nsslip-user\nsslip-password\n2\n' "$STREAMED_SSLIP_OUTPUT" MOCK_PUBLIC_IPV4=138.124.35.156 || fail "Streamed sslip.io selection failed"
+    assert_contains "Select access mode [1]:" "$STREAMED_SSLIP_OUTPUT"
+    assert_contains "https://chromium.138-124-35-156.sslip.io" "$STREAMED_SSLIP_OUTPUT"
+    assert_contains "sslip.io is a third-party DNS service" "$STREAMED_SSLIP_OUTPUT"
+    assert_contains $'docker\tnetwork\tcreate\t--label\tcom.instant-linux-browser.managed=true\tinstant-linux-browser' "$MOCK_LOG"
+
+    : > "$MOCK_LOG"
+    STREAMED_DOMAIN_OUTPUT="$TEMP_DIR/streamed-domain.out"
+    run_streamed_install $'1\ndomain-user\ndomain-password\n3\nstreamed.example.com\n' "$STREAMED_DOMAIN_OUTPUT" || fail "Streamed custom-domain selection failed"
+    assert_contains "Custom domain for automatic HTTPS:" "$STREAMED_DOMAIN_OUTPUT"
+    assert_contains "https://streamed.example.com" "$STREAMED_DOMAIN_OUTPUT"
 else
     echo "SKIP: streamed TTY tests require the util-linux script command"
 fi
@@ -254,23 +290,152 @@ fi
 
 require_root() { :; }
 detect_arch() { echo x86_64; }
+detect_ip() { echo 203.0.113.10; }
 sleep() { :; }
 check_port_available() { :; }
 
-EXPLICIT_EMPTY_DOMAIN="not-empty"
-(
-    prompt_optional_domain() { fail "Explicit empty ILB_DOMAIN prompted unexpectedly"; }
-    TTY_FD=9
-    ILB_DOMAIN=
-    resolve_install_domain EXPLICIT_EMPTY_DOMAIN
-    [[ -z "$EXPLICIT_EMPTY_DOMAIN" ]]
-) || fail "Explicit empty ILB_DOMAIN did not disable domain mode"
+if [[ -n "$TTY_FD" ]]; then
+    exec {TTY_FD}>&-
+fi
+TTY_FD=""
 
-NORMALIZED_DOMAIN=""
-ILB_DOMAIN=Browser.Example.COM
-resolve_install_domain NORMALIZED_DOMAIN
+assert_prompt_mode() {
+    local input="$1"
+    local expected="$2"
+    local selected_mode=""
+
+    prompt_access_mode selected_mode <<< "$input" > /dev/null
+    [[ "$selected_mode" == "$expected" ]] || fail "Interactive selection '$input' did not resolve to $expected"
+}
+
+assert_prompt_mode "" ip
+assert_prompt_mode 1 ip
+assert_prompt_mode 2 sslip
+assert_prompt_mode 3 domain
+
+PROMPTED_DOMAIN=""
+prompt_custom_domain PROMPTED_DOMAIN <<< "Prompted.Example.COM" > /dev/null
+[[ "$PROMPTED_DOMAIN" == "Prompted.Example.COM" ]] || fail "Interactive custom-domain input was not captured"
+
+unset ILB_ACCESS_MODE ILB_DOMAIN
+RESOLVED_MODE=""
+resolve_access_mode RESOLVED_MODE
+[[ "$RESOLVED_MODE" == "ip" ]] || fail "Non-interactive installation did not default to IP mode"
+
+ILB_DOMAIN=
+resolve_access_mode RESOLVED_MODE
+[[ "$RESOLVED_MODE" == "ip" ]] || fail "Explicit empty ILB_DOMAIN did not select IP mode"
 unset ILB_DOMAIN
-[[ "$NORMALIZED_DOMAIN" == "browser.example.com" ]] || fail "Domain was not normalized to lowercase"
+
+ILB_DOMAIN=Browser.Example.COM
+resolve_access_mode RESOLVED_MODE
+[[ "$RESOLVED_MODE" == "domain" ]] || fail "Legacy ILB_DOMAIN did not select domain mode"
+LEGACY_DOMAIN=""
+resolve_access_hostname chromium "$RESOLVED_MODE" LEGACY_DOMAIN
+[[ "$LEGACY_DOMAIN" == "browser.example.com" ]] || fail "Legacy domain was not normalized to lowercase"
+unset ILB_DOMAIN
+
+for EXPLICIT_MODE in ip sslip; do
+    ILB_ACCESS_MODE="$EXPLICIT_MODE"
+    resolve_access_mode RESOLVED_MODE
+    [[ "$RESOLVED_MODE" == "$EXPLICIT_MODE" ]] || fail "ILB_ACCESS_MODE=$EXPLICIT_MODE was not preserved"
+done
+
+ILB_ACCESS_MODE=domain
+ILB_DOMAIN=Explicit.Example.COM
+resolve_access_mode RESOLVED_MODE
+EXPLICIT_DOMAIN=""
+resolve_access_hostname firefox "$RESOLVED_MODE" EXPLICIT_DOMAIN
+[[ "$EXPLICIT_DOMAIN" == "explicit.example.com" ]] || fail "Explicit domain mode did not resolve its hostname"
+unset ILB_ACCESS_MODE ILB_DOMAIN
+
+for INVALID_MODE in "" IP SSLIP custom; do
+    if (ILB_ACCESS_MODE="$INVALID_MODE" resolve_access_mode INVALID_RESULT) > /dev/null 2>&1; then
+        fail "Invalid access mode was accepted: ${INVALID_MODE:-empty}"
+    fi
+done
+
+for CONFLICT_MODE in ip sslip; do
+    if (ILB_ACCESS_MODE="$CONFLICT_MODE" ILB_DOMAIN=conflict.example.com resolve_access_mode CONFLICT_RESULT) > /dev/null 2>&1; then
+        fail "ILB_ACCESS_MODE=$CONFLICT_MODE accepted a conflicting ILB_DOMAIN"
+    fi
+done
+
+: > "$MOCK_LOG"
+if (ILB_ACCESS_MODE=IP ILB_USERNAME=admin ILB_PASSWORD=preflight-secret install_browser chromium lscr.io/linuxserver/chromium:latest 3000) > /dev/null 2>&1; then
+    fail "Invalid access mode reached installation"
+fi
+[[ ! -s "$MOCK_LOG" ]] || fail "Invalid access mode contacted Docker before failing"
+
+: > "$MOCK_LOG"
+if (ILB_ACCESS_MODE=sslip ILB_DOMAIN=conflict.example.com ILB_USERNAME=admin ILB_PASSWORD=preflight-secret install_browser chromium lscr.io/linuxserver/chromium:latest 3000) > /dev/null 2>&1; then
+    fail "Conflicting access mode reached installation"
+fi
+[[ ! -s "$MOCK_LOG" ]] || fail "Conflicting access mode contacted Docker before failing"
+
+MISSING_DOMAIN_OUTPUT="$TEMP_DIR/missing-domain.out"
+if (
+    TTY_FD=""
+    ILB_ACCESS_MODE=domain
+    unset ILB_DOMAIN
+    resolve_access_mode MISSING_MODE
+    resolve_access_hostname chromium "$MISSING_MODE" MISSING_HOSTNAME
+) > "$MISSING_DOMAIN_OUTPUT" 2>&1; then
+    fail "Non-interactive domain mode accepted a missing ILB_DOMAIN"
+fi
+assert_contains "requires a non-empty ILB_DOMAIN" "$MISSING_DOMAIN_OUTPUT"
+
+for PUBLIC_IPV4 in 1.1.1.1 8.8.8.8 138.124.35.156 223.255.255.254; do
+    validate_public_ipv4 "$PUBLIC_IPV4" || fail "Public IPv4 was rejected: $PUBLIC_IPV4"
+done
+
+for NON_PUBLIC_IPV4 in \
+    '' '1.2.3' '1.2.3.4.5' '1.2.3.a' '01.2.3.4' '256.1.1.1' \
+    '0.1.2.3' '10.1.2.3' '100.64.0.1' '100.127.255.254' '127.0.0.1' \
+    '169.254.1.1' '172.16.0.1' '172.31.255.254' '192.0.0.1' '192.0.2.1' \
+    '192.88.99.1' '192.168.1.1' '198.18.0.1' '198.19.255.254' \
+    '198.51.100.1' '203.0.113.1' '224.0.0.1' '239.255.255.255' '240.0.0.1' '255.255.255.255'; do
+    if validate_public_ipv4 "$NON_PUBLIC_IPV4"; then
+        fail "Malformed or non-public IPv4 was accepted: ${NON_PUBLIC_IPV4:-empty}"
+    fi
+done
+
+: > "$MOCK_CURL_LOG"
+export MOCK_PUBLIC_IPV4=138.124.35.156
+CHROMIUM_SSLIP_HOSTNAME=""
+FIREFOX_SSLIP_HOSTNAME=""
+resolve_access_hostname chromium sslip CHROMIUM_SSLIP_HOSTNAME
+resolve_access_hostname firefox sslip FIREFOX_SSLIP_HOSTNAME
+[[ "$CHROMIUM_SSLIP_HOSTNAME" == "chromium.138-124-35-156.sslip.io" ]] || fail "Chromium sslip.io hostname was generated incorrectly"
+[[ "$FIREFOX_SSLIP_HOSTNAME" == "firefox.138-124-35-156.sslip.io" ]] || fail "Firefox sslip.io hostname was generated incorrectly"
+validate_domain "$CHROMIUM_SSLIP_HOSTNAME" || fail "Generated Chromium sslip.io hostname failed domain validation"
+validate_domain "$FIREFOX_SSLIP_HOSTNAME" || fail "Generated Firefox sslip.io hostname failed domain validation"
+assert_contains $'curl\t-4\t-fsS\t--connect-timeout\t3\t--max-time\t5\thttps://ifconfig.me/ip' "$MOCK_CURL_LOG"
+
+NON_PUBLIC_DETECTION_OUTPUT="$TEMP_DIR/non-public-detection.out"
+if (MOCK_PUBLIC_IPV4=10.0.0.1 detect_public_ipv4 REJECTED_IPV4) > "$NON_PUBLIC_DETECTION_OUTPUT" 2>&1; then
+    fail "Public IPv4 detection accepted a private address"
+fi
+assert_contains "requires a publicly routable IPv4 address" "$NON_PUBLIC_DETECTION_OUTPUT"
+
+EMPTY_DETECTION_OUTPUT="$TEMP_DIR/empty-detection.out"
+if (MOCK_PUBLIC_IPV4= detect_public_ipv4 REJECTED_IPV4) > "$EMPTY_DETECTION_OUTPUT" 2>&1; then
+    fail "Public IPv4 detection accepted an empty response"
+fi
+assert_contains "requires a publicly routable IPv4 address" "$EMPTY_DETECTION_OUTPUT"
+
+FAILED_LOOKUP_OUTPUT="$TEMP_DIR/failed-lookup.out"
+if (MOCK_CURL_FAIL=1 detect_public_ipv4 REJECTED_IPV4) > "$FAILED_LOOKUP_OUTPUT" 2>&1; then
+    fail "Public IPv4 detection accepted a failed lookup"
+fi
+assert_contains "could not detect the server's public IPv4 address within 5 seconds" "$FAILED_LOOKUP_OUTPUT"
+unset MOCK_PUBLIC_IPV4
+
+: > "$MOCK_LOG"
+if (ILB_ACCESS_MODE=sslip MOCK_PUBLIC_IPV4=10.0.0.1 ILB_USERNAME=admin ILB_PASSWORD=preflight-secret install_browser chromium lscr.io/linuxserver/chromium:latest 3000) > /dev/null 2>&1; then
+    fail "Non-public IPv4 reached installation"
+fi
+[[ ! -s "$MOCK_LOG" ]] || fail "Non-public IPv4 contacted Docker before failing"
 
 for INVALID_DOMAIN in \
     'https://browser.example.com' \
@@ -286,16 +451,14 @@ for INVALID_DOMAIN in \
     '-browser.example.com' \
     'browser-.example.com' \
     'browser.example.com;import'; do
-    if (ILB_DOMAIN="$INVALID_DOMAIN" resolve_install_domain REJECTED_DOMAIN) > /dev/null 2>&1; then
+    if (
+        ILB_DOMAIN="$INVALID_DOMAIN"
+        resolve_access_mode INVALID_DOMAIN_MODE
+        resolve_access_hostname chromium "$INVALID_DOMAIN_MODE" REJECTED_DOMAIN
+    ) > /dev/null 2>&1; then
         fail "Invalid domain was accepted: $INVALID_DOMAIN"
     fi
 done
-
-NON_INTERACTIVE_DOMAIN="unexpected"
-TTY_FD=""
-unset ILB_DOMAIN
-resolve_install_domain NON_INTERACTIVE_DOMAIN
-[[ -z "$NON_INTERACTIVE_DOMAIN" ]] || fail "No-terminal domain selection did not default to IP mode"
 
 INJECTION_OUTPUT="$TEMP_DIR/injection.out"
 : > "$MOCK_LOG"
@@ -304,6 +467,7 @@ if (ILB_USERNAME=admin ILB_PASSWORD=secret ILB_DOMAIN='browser.example.com;impor
 fi
 assert_not_contains $'docker\tpull' "$MOCK_LOG"
 assert_not_contains $'docker\trun' "$MOCK_LOG"
+[[ ! -s "$MOCK_LOG" ]] || fail "Invalid domain contacted Docker before failing"
 
 INVALID_EMAIL_OUTPUT="$TEMP_DIR/invalid-email.out"
 : > "$MOCK_LOG"
@@ -312,6 +476,7 @@ if (ILB_USERNAME=admin ILB_PASSWORD=secret ILB_DOMAIN=browser.example.com ILB_AC
 fi
 assert_not_contains $'docker\tpull' "$MOCK_LOG"
 assert_not_contains $'docker\trun' "$MOCK_LOG"
+[[ ! -s "$MOCK_LOG" ]] || fail "Invalid ACME email contacted Docker before failing"
 
 DUPLICATE_CONFIG_BASE="$TEMP_DIR/duplicate"
 (
@@ -368,12 +533,17 @@ RESOLVED_IDS="$(SUDO_USER=root resolve_puid_pgid)"
 
 : > "$MOCK_LOG"
 INSTALL_OUTPUT="$TEMP_DIR/install.out"
-unset ILB_DOMAIN ILB_ACME_EMAIL MOCK_EXISTING_CONTAINERS MOCK_NETWORK_EXISTS
+unset ILB_ACCESS_MODE ILB_DOMAIN ILB_ACME_EMAIL MOCK_EXISTING_CONTAINERS MOCK_NETWORK_EXISTS
 ILB_USERNAME=admin ILB_PASSWORD=do-not-print-this install_browser chromium lscr.io/linuxserver/chromium:latest 3000 > "$INSTALL_OUTPUT" 2>&1
 assert_not_contains "do-not-print-this" "$INSTALL_OUTPUT"
+assert_not_contains "do-not-print-this" "$MOCK_LOG"
+assert_contains $'PASSWORD=[REDACTED]' "$MOCK_LOG"
 assert_not_contains "Enter UI Username" "$INSTALL_OUTPUT"
 assert_not_contains "Enter UI Password" "$INSTALL_OUTPUT"
-assert_not_contains "Optional domain for automatic HTTPS" "$INSTALL_OUTPUT"
+assert_not_contains "Select access mode" "$INSTALL_OUTPUT"
+assert_contains "https://203.0.113.10:3001" "$INSTALL_OUTPUT"
+assert_contains "HTTP (proxy-only)" "$INSTALL_OUTPUT"
+assert_contains "self-signed certificate" "$INSTALL_OUTPUT"
 
 RUN_RECORD="$TEMP_DIR/docker-run.log"
 awk -F '\t' '$2 == "run" { print; found = 1; exit } END { exit !found }' "$MOCK_LOG" > "$RUN_RECORD" || fail "Docker run invocation was not recorded"
@@ -384,6 +554,39 @@ assert_environment_before_image "CHROME_CLI=--no-sandbox --disable-gpu --disable
 assert_contains $'\t-p\t3000:3000\t-p\t3001:3001' "$RUN_RECORD"
 assert_not_contains "--network=$CADDY_NETWORK" "$RUN_RECORD"
 assert_not_contains "--disable-software-rasterizer" "$RUN_RECORD"
+assert_not_contains "instant-linux-browser-caddy" "$MOCK_LOG"
+assert_not_contains $'docker\tnetwork\t' "$MOCK_LOG"
+
+CONFIG_BASE="$TEMP_DIR/sslip-chromium"
+: > "$MOCK_LOG"
+export MOCK_PUBLIC_IPV4=138.124.35.156
+SSLIP_CHROMIUM_OUTPUT="$TEMP_DIR/sslip-chromium.out"
+ILB_ACCESS_MODE=sslip ILB_USERNAME=sslip-user ILB_PASSWORD=sslip-password \
+    install_browser chromium lscr.io/linuxserver/chromium:latest 3000 > "$SSLIP_CHROMIUM_OUTPUT" 2>&1
+unset ILB_ACCESS_MODE MOCK_PUBLIC_IPV4
+assert_contains "https://chromium.138-124-35-156.sslip.io" "$SSLIP_CHROMIUM_OUTPUT"
+assert_not_contains "HTTP (proxy-only)" "$SSLIP_CHROMIUM_OUTPUT"
+assert_contains "sslip.io is a third-party DNS service" "$SSLIP_CHROMIUM_OUTPUT"
+assert_contains "hostname exposes the server IP" "$SSLIP_CHROMIUM_OUTPUT"
+assert_contains "ports 80 and 443 must be publicly reachable" "$SSLIP_CHROMIUM_OUTPUT"
+assert_contains "rate limits may prevent certificate issuance" "$SSLIP_CHROMIUM_OUTPUT"
+assert_contains "custom domain for stable long-term production" "$SSLIP_CHROMIUM_OUTPUT"
+assert_not_contains "sslip-password" "$SSLIP_CHROMIUM_OUTPUT"
+assert_not_contains "Enter UI Username" "$SSLIP_CHROMIUM_OUTPUT"
+assert_not_contains "Enter UI Password" "$SSLIP_CHROMIUM_OUTPUT"
+assert_not_contains "Select access mode" "$SSLIP_CHROMIUM_OUTPUT"
+assert_not_contains "Custom domain for automatic HTTPS" "$SSLIP_CHROMIUM_OUTPUT"
+assert_contains "chromium.138-124-35-156.sslip.io {" "$CONFIG_BASE/proxy/sites/chromium.caddy"
+assert_contains "reverse_proxy chromium:3000" "$CONFIG_BASE/proxy/sites/chromium.caddy"
+
+SSLIP_CHROMIUM_RUN="$TEMP_DIR/sslip-chromium-run.log"
+record_run_with_argument "lscr.io/linuxserver/chromium:latest" "$SSLIP_CHROMIUM_RUN" || fail "sslip.io Chromium run was not recorded"
+assert_contains $'\t--network=instant-linux-browser\t' "$SSLIP_CHROMIUM_RUN"
+assert_contains $'\t-p\t127.0.0.1:3000:3000\t-p\t127.0.0.1:3001:3001' "$SSLIP_CHROMIUM_RUN"
+
+SSLIP_CADDY_RUN="$TEMP_DIR/sslip-caddy-run.log"
+record_run_with_argument "--name=instant-linux-browser-caddy" "$SSLIP_CADDY_RUN" || fail "sslip.io Caddy run was not recorded"
+assert_contains $'\t-p\t80:80\t-p\t443:443' "$SSLIP_CADDY_RUN"
 
 CONFIG_BASE="$TEMP_DIR/domain-chromium"
 : > "$MOCK_LOG"
@@ -395,6 +598,10 @@ assert_contains "Browser URL (HTTPS):" "$DOMAIN_CHROMIUM_OUTPUT"
 assert_contains "https://chrome.example.com" "$DOMAIN_CHROMIUM_OUTPUT"
 assert_contains "Caddy manages certificate issuance and renewal" "$DOMAIN_CHROMIUM_OUTPUT"
 assert_not_contains "domain-password" "$DOMAIN_CHROMIUM_OUTPUT"
+assert_not_contains "Enter UI Username" "$DOMAIN_CHROMIUM_OUTPUT"
+assert_not_contains "Enter UI Password" "$DOMAIN_CHROMIUM_OUTPUT"
+assert_not_contains "Select access mode" "$DOMAIN_CHROMIUM_OUTPUT"
+assert_not_contains "Custom domain for automatic HTTPS" "$DOMAIN_CHROMIUM_OUTPUT"
 assert_contains "chrome.example.com {" "$CONFIG_BASE/proxy/sites/chromium.caddy"
 assert_contains "reverse_proxy chromium:3000" "$CONFIG_BASE/proxy/sites/chromium.caddy"
 assert_contains "email admin@example.com" "$CONFIG_BASE/proxy/Caddyfile"
@@ -441,7 +648,7 @@ CONFIG_BASE="$TEMP_DIR/domain-firefox"
 : > "$MOCK_LOG"
 unset MOCK_EXISTING_CONTAINERS MOCK_NETWORK_EXISTS
 DOMAIN_FIREFOX_OUTPUT="$TEMP_DIR/domain-firefox.out"
-ILB_USERNAME=firefox-user ILB_PASSWORD=firefox-password ILB_DOMAIN=firefox.example.com \
+ILB_ACCESS_MODE=domain ILB_USERNAME=firefox-user ILB_PASSWORD=firefox-password ILB_DOMAIN=firefox.example.com \
     install_browser firefox lscr.io/linuxserver/firefox:latest 4000 > "$DOMAIN_FIREFOX_OUTPUT" 2>&1
 assert_contains "https://firefox.example.com" "$DOMAIN_FIREFOX_OUTPUT"
 assert_contains "reverse_proxy firefox:3000" "$CONFIG_BASE/proxy/sites/firefox.caddy"
@@ -450,6 +657,23 @@ DOMAIN_FIREFOX_RUN="$TEMP_DIR/domain-firefox-run.log"
 record_run_with_argument "lscr.io/linuxserver/firefox:latest" "$DOMAIN_FIREFOX_RUN" || fail "Domain Firefox run was not recorded"
 assert_contains $'\t--network=instant-linux-browser\t' "$DOMAIN_FIREFOX_RUN"
 assert_contains $'\t-p\t127.0.0.1:4000:3000\t-p\t127.0.0.1:4001:3001' "$DOMAIN_FIREFOX_RUN"
+
+CONFIG_BASE="$TEMP_DIR/sslip-firefox"
+: > "$MOCK_LOG"
+unset MOCK_EXISTING_CONTAINERS MOCK_NETWORK_EXISTS ILB_DOMAIN
+export MOCK_PUBLIC_IPV4=138.124.35.156
+SSLIP_FIREFOX_OUTPUT="$TEMP_DIR/sslip-firefox.out"
+ILB_ACCESS_MODE=sslip ILB_USERNAME=firefox-user ILB_PASSWORD=firefox-password \
+    install_browser firefox lscr.io/linuxserver/firefox:latest 4000 > "$SSLIP_FIREFOX_OUTPUT" 2>&1
+unset ILB_ACCESS_MODE MOCK_PUBLIC_IPV4
+assert_contains "https://firefox.138-124-35-156.sslip.io" "$SSLIP_FIREFOX_OUTPUT"
+assert_contains "firefox.138-124-35-156.sslip.io {" "$CONFIG_BASE/proxy/sites/firefox.caddy"
+assert_contains "reverse_proxy firefox:3000" "$CONFIG_BASE/proxy/sites/firefox.caddy"
+
+SSLIP_FIREFOX_RUN="$TEMP_DIR/sslip-firefox-run.log"
+record_run_with_argument "lscr.io/linuxserver/firefox:latest" "$SSLIP_FIREFOX_RUN" || fail "sslip.io Firefox run was not recorded"
+assert_contains $'\t--network=instant-linux-browser\t' "$SSLIP_FIREFOX_RUN"
+assert_contains $'\t-p\t127.0.0.1:4000:3000\t-p\t127.0.0.1:4001:3001' "$SSLIP_FIREFOX_RUN"
 
 CONFIG_BASE="$TEMP_DIR/reused-caddy"
 : > "$MOCK_LOG"
@@ -467,7 +691,7 @@ assert_contains $'docker\texec\t-w\t/etc/caddy\tinstant-linux-browser-caddy\tcad
 CONFIG_BASE="$TEMP_DIR/uninstall-one-route"
 ensure_proxy_directories
 write_caddy_main_config ""
-write_caddy_route chromium chromium.example.com
+write_caddy_route chromium chromium.138-124-35-156.sslip.io
 write_caddy_route firefox firefox.example.com
 : > "$MOCK_LOG"
 export MOCK_EXISTING_CONTAINERS=chromium,instant-linux-browser-caddy
@@ -508,7 +732,7 @@ assert_not_contains "Cleanup complete." "$UNINSTALL_FAILURE_OUTPUT"
 assert_contains "Failed to remove the chromium domain route safely" "$UNINSTALL_FAILURE_OUTPUT"
 unset MOCK_CADDY_RELOAD_FAIL
 
-unset MOCK_EXISTING_CONTAINERS MOCK_NETWORK_EXISTS ILB_DOMAIN ILB_ACME_EMAIL
+unset MOCK_EXISTING_CONTAINERS MOCK_NETWORK_EXISTS MOCK_PUBLIC_IPV4 ILB_ACCESS_MODE ILB_DOMAIN ILB_ACME_EMAIL
 
 LOG_OUTPUT="$TEMP_DIR/log.out"
 export MOCK_LOG_LINE='do-not-print-this'

@@ -86,13 +86,60 @@ prompt_secret() {
     printf -v "$result_var" '%s' "$value"
 }
 
-prompt_optional_domain() {
+prompt_access_mode() {
+    local result_var="$1"
+    local choice=""
+
+    if [[ -n "$TTY_FD" ]]; then
+        printf '%s\n' \
+            "1) Server IP - HTTPS with a browser certificate warning" \
+            "2) Automatic sslip.io hostname - trusted HTTPS without owning a domain" \
+            "3) Custom domain - trusted HTTPS using your own DNS" >&"$TTY_FD"
+        printf "Select access mode [1]: " >&"$TTY_FD"
+        if ! IFS= read -r choice <&"$TTY_FD"; then
+            die "Access mode input ended or was interrupted."
+        fi
+    else
+        printf '%s\n' \
+            "1) Server IP - HTTPS with a browser certificate warning" \
+            "2) Automatic sslip.io hostname - trusted HTTPS without owning a domain" \
+            "3) Custom domain - trusted HTTPS using your own DNS"
+        printf "Select access mode [1]: "
+        if ! IFS= read -r choice; then
+            die "Access mode input ended or was interrupted."
+        fi
+    fi
+
+    case "$choice" in
+        ""|1)
+            printf -v "$result_var" '%s' "ip"
+            ;;
+        2)
+            printf -v "$result_var" '%s' "sslip"
+            ;;
+        3)
+            printf -v "$result_var" '%s' "domain"
+            ;;
+        *)
+            die "Invalid access mode selection: $choice. Use 1, 2, or 3."
+            ;;
+    esac
+}
+
+prompt_custom_domain() {
     local result_var="$1"
     local value=""
 
-    printf "Optional domain for automatic HTTPS (leave blank for IP access): " >&"$TTY_FD"
-    if ! IFS= read -r value <&"$TTY_FD"; then
-        die "Domain input ended or was interrupted."
+    if [[ -n "$TTY_FD" ]]; then
+        printf "Custom domain for automatic HTTPS: " >&"$TTY_FD"
+        if ! IFS= read -r value <&"$TTY_FD"; then
+            die "Domain input ended or was interrupted."
+        fi
+    else
+        printf "Custom domain for automatic HTTPS: "
+        if ! IFS= read -r value; then
+            die "Domain input ended or was interrupted."
+        fi
     fi
 
     printf -v "$result_var" '%s' "$value"
@@ -122,22 +169,105 @@ validate_domain() {
     done
 }
 
-resolve_install_domain() {
+validate_public_ipv4() {
+    local ip="$1"
+    local first second third fourth octet
+
+    [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    IFS='.' read -r first second third fourth <<< "$ip"
+
+    for octet in "$first" "$second" "$third" "$fourth"; do
+        [[ "$octet" == "0" || "$octet" != 0* ]] || return 1
+        ((10#$octet <= 255)) || return 1
+    done
+
+    ((first != 0 && first != 10 && first != 127)) || return 1
+    ! ((first == 100 && second >= 64 && second <= 127)) || return 1
+    ! ((first == 169 && second == 254)) || return 1
+    ! ((first == 172 && second >= 16 && second <= 31)) || return 1
+    ! ((first == 192 && second == 0 && third == 0)) || return 1
+    ! ((first == 192 && second == 0 && third == 2)) || return 1
+    ! ((first == 192 && second == 88 && third == 99)) || return 1
+    ! ((first == 192 && second == 168)) || return 1
+    ! ((first == 198 && (second == 18 || second == 19))) || return 1
+    ! ((first == 198 && second == 51 && third == 100)) || return 1
+    ! ((first == 203 && second == 0 && third == 113)) || return 1
+    ((first < 224)) || return 1
+}
+
+detect_public_ipv4() {
     local result_var="$1"
-    local resolved_domain=""
+    local detected_ipv4=""
 
-    if [[ -n "${ILB_DOMAIN+x}" ]]; then
-        resolved_domain="$ILB_DOMAIN"
+    command -v curl >/dev/null 2>&1 || die "Automatic sslip.io mode requires curl to detect the server's public IPv4 address."
+    if ! detected_ipv4="$(curl -4 -fsS --connect-timeout 3 --max-time 5 https://ifconfig.me/ip 2>/dev/null)"; then
+        die "Automatic sslip.io mode could not detect the server's public IPv4 address within 5 seconds."
+    fi
+    validate_public_ipv4 "$detected_ipv4" || die "Automatic sslip.io mode requires a publicly routable IPv4 address, but detection returned a missing, malformed, or non-public value."
+
+    printf -v "$result_var" '%s' "$detected_ipv4"
+}
+
+resolve_access_mode() {
+    local result_var="$1"
+    local resolved_mode=""
+
+    if [[ -n "${ILB_ACCESS_MODE+x}" ]]; then
+        resolved_mode="$ILB_ACCESS_MODE"
+    elif [[ -n "${ILB_DOMAIN:-}" ]]; then
+        resolved_mode="domain"
+    elif [[ -n "${ILB_DOMAIN+x}" ]]; then
+        resolved_mode="ip"
     elif [[ -n "$TTY_FD" ]]; then
-        prompt_optional_domain resolved_domain
+        prompt_access_mode resolved_mode
+    else
+        resolved_mode="ip"
     fi
 
-    if [[ -n "$resolved_domain" ]]; then
-        resolved_domain="${resolved_domain,,}"
-        validate_domain "$resolved_domain" || die "Invalid ILB_DOMAIN value. Use a fully qualified hostname without a scheme, path, port, wildcard, or whitespace."
+    case "$resolved_mode" in
+        ip|sslip|domain)
+            ;;
+        *)
+            die "Invalid ILB_ACCESS_MODE value: ${resolved_mode:-empty}. Use ip, sslip, or domain exactly as shown."
+            ;;
+    esac
+
+    if [[ "$resolved_mode" != "domain" && -n "${ILB_DOMAIN:-}" ]]; then
+        die "ILB_DOMAIN cannot be used with ILB_ACCESS_MODE=$resolved_mode. Use ILB_ACCESS_MODE=domain or remove ILB_DOMAIN."
     fi
 
-    printf -v "$result_var" '%s' "$resolved_domain"
+    printf -v "$result_var" '%s' "$resolved_mode"
+}
+
+resolve_access_hostname() {
+    local browser="$1"
+    local access_mode="$2"
+    local result_var="$3"
+    local resolved_hostname=""
+    local public_ipv4=""
+
+    case "$access_mode" in
+        ip)
+            ;;
+        sslip)
+            detect_public_ipv4 public_ipv4
+            resolved_hostname="${browser}.${public_ipv4//./-}.sslip.io"
+            ;;
+        domain)
+            if [[ -n "${ILB_DOMAIN:-}" ]]; then
+                resolved_hostname="$ILB_DOMAIN"
+            elif [[ -n "$TTY_FD" ]]; then
+                prompt_custom_domain resolved_hostname
+            else
+                die "ILB_ACCESS_MODE=domain requires a non-empty ILB_DOMAIN when no controlling terminal is available."
+            fi
+
+            resolved_hostname="${resolved_hostname,,}"
+            validate_domain "$resolved_hostname" || die "Invalid ILB_DOMAIN value. Use a fully qualified hostname without a scheme, path, port, wildcard, or whitespace."
+            ;;
+    esac
+
+    printf -v "$result_var" '%s' "$resolved_hostname"
 }
 
 validate_acme_email() {
@@ -638,19 +768,12 @@ install_browser() {
     local image="$2"
     local port="$3"
     local ssl_port=$((port + 1))
-    local domain=""
+    local access_mode=""
+    local access_hostname=""
     local acme_email="${ILB_ACME_EMAIL:-}"
 
     require_root
-    ensure_docker_ready
     show_arch_info
-
-    if container_exists "$browser"; then
-        die "$browser container already exists. Use the uninstall option first if you want to recreate it."
-    fi
-
-    check_port_available "$port"
-    check_port_available "$ssl_port"
 
     echo -e "${CYAN}--- Configuration for $browser ---${NC}"
     local username=""
@@ -669,15 +792,27 @@ install_browser() {
         prompt_secret password "Enter UI Password: "
     fi
 
-    resolve_install_domain domain
+    resolve_access_mode access_mode
+    resolve_access_hostname "$browser" "$access_mode" access_hostname
 
     if [[ -z "$password" ]]; then
         warn "Empty UI password selected. Use a firewall or reverse proxy allow-list if this server is reachable from the internet."
     fi
 
-    if [[ -n "$domain" ]]; then
+    if [[ "$access_mode" != "ip" ]]; then
         validate_acme_email "$acme_email" || die "Invalid ILB_ACME_EMAIL value."
-        assert_domain_available "$browser" "$domain"
+        assert_domain_available "$browser" "$access_hostname"
+    fi
+
+    ensure_docker_ready
+    if container_exists "$browser"; then
+        die "$browser container already exists. Use the uninstall option first if you want to recreate it."
+    fi
+
+    check_port_available "$port"
+    check_port_available "$ssl_port"
+
+    if [[ "$access_mode" != "ip" ]]; then
         prepare_domain_proxy
     fi
 
@@ -702,7 +837,7 @@ install_browser() {
         info "Applying Chromium flags through CHROME_CLI and CHROME_FLAGS: $CHROMIUM_FLAGS"
     fi
 
-    if [[ -n "$domain" ]]; then
+    if [[ "$access_mode" != "ip" ]]; then
         browser_network=(--network="$CADDY_NETWORK")
         browser_ports=(-p "127.0.0.1:${port}:3000" -p "127.0.0.1:${ssl_port}:3001")
     fi
@@ -741,30 +876,36 @@ install_browser() {
         verify_chromium_startup "$password" || die "Chromium is not ready. Check the logs and debug commands above."
     fi
 
-    if [[ -n "$domain" ]] && ! configure_caddy_route "$browser" "$domain" "$acme_email"; then
+    if [[ "$access_mode" != "ip" ]] && ! configure_caddy_route "$browser" "$access_hostname" "$acme_email"; then
         docker stop "$browser" >/dev/null 2>&1 || true
         docker rm "$browser" >/dev/null 2>&1 || true
         cleanup_proxy_network
-        die "Domain proxy setup failed. The new $browser container was removed; persistent browser and Caddy data were kept."
+        die "Trusted HTTPS proxy setup failed. The new $browser container was removed; persistent browser and Caddy data were kept."
     fi
 
     local ip
 
     success "================================================"
     success "Deployment Successful!"
-    if [[ -n "$domain" ]]; then
-        echo -e "Browser URL (HTTPS): ${CYAN}https://${domain}${NC}"
+    if [[ "$access_mode" != "ip" ]]; then
+        echo -e "Browser URL (HTTPS): ${CYAN}https://${access_hostname}${NC}"
     else
         ip=$(detect_ip)
         echo -e "Browser URL (HTTPS): ${CYAN}https://${ip}:${ssl_port}${NC}"
         echo -e "HTTP (proxy-only) : ${CYAN}http://${ip}:${port}${NC}"
     fi
     echo -e "Credentials       : ${YELLOW}configured for $username${NC}"
-    if [[ -n "$domain" ]]; then
+    if [[ "$access_mode" == "domain" ]]; then
         echo "Caddy manages certificate issuance and renewal for this domain."
         warn "DNS must point to this server, and inbound ports 80 and 443 must be reachable."
+    elif [[ "$access_mode" == "sslip" ]]; then
+        echo "Caddy manages certificate issuance and renewal for this sslip.io hostname."
+        warn "sslip.io is a third-party DNS service, and this hostname exposes the server IP."
+        warn "Inbound ports 80 and 443 must be publicly reachable."
+        warn "Public CA or sslip.io rate limits may prevent certificate issuance."
+        warn "Use a custom domain for stable long-term production deployments."
     else
-        echo -e "${YELLOW}Note: Accept the SSL warning in your browser.${NC}"
+        echo -e "${YELLOW}Note: This mode uses a self-signed certificate, so your browser may show a certificate warning.${NC}"
     fi
     success "================================================"
 }

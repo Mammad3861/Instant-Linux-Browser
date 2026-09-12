@@ -16,7 +16,7 @@ It keeps an interactive menu for installing, uninstalling, checking status, and 
 - Firefox HTTPS on `4001`; HTTP on `4000` is for a reverse proxy only.
 - Persistent config in `/opt/instant-linux-browser/<browser>/config`.
 - Username/password prompts, with `ILB_USERNAME` and `ILB_PASSWORD` overrides.
-- Optional trusted HTTPS for a custom domain through the official Caddy image.
+- Three HTTPS access modes: server IP, automatic sslip.io hostname, or custom domain.
 - Supports amd64/x86_64 and arm64/aarch64 Linux servers when the upstream image supports them.
 - Keeps the one-command interactive installer and direct actions for automation.
 
@@ -59,25 +59,39 @@ You can also pass credentials:
 curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium ILB_USERNAME=admin ILB_PASSWORD='change-this-password' bash
 ```
 
-## Custom Domain HTTPS
+## HTTPS Access Modes
 
-IP/port installation remains the default. To use a real domain, set `ILB_DOMAIN`; `ILB_ACME_EMAIL` is optional:
+Set `ILB_ACCESS_MODE=ip|sslip|domain`, or choose a mode from the interactive menu after entering the browser credentials.
+
+### IP mode
+
+IP mode is the default. It uses Selkies' self-signed certificate and may show a browser certificate warning. Chromium uses `https://SERVER_IP:3001`; Firefox uses `https://SERVER_IP:4001`. Caddy is not started, and HTTP ports `3000` and `4000` remain reverse-proxy-only.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium ILB_USERNAME=admin ILB_PASSWORD='change-this-password' ILB_DOMAIN=browser.example.com ILB_ACME_EMAIL=admin@example.com bash
+curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium ILB_ACCESS_MODE=ip bash
 ```
 
-When installing interactively, you can also enter a domain after the browser credentials. Leave it blank to keep IP/port mode. Domain mode uses one shared `caddy:2-alpine` container, and Caddy automatically obtains and renews the public certificate.
+### Automatic sslip.io mode
 
-Before installation:
+This mode performs a bounded external lookup for the server's public IPv4 address and generates a browser-specific hostname such as `chromium.138-124-35-156.sslip.io` or `firefox.138-124-35-156.sslip.io`. Caddy manages a publicly trusted certificate, while the browser ports bind only to loopback.
 
-- point the domain's DNS A and, when used, AAAA records to the VPS;
-- open inbound TCP ports `80` and `443`;
-- handle any existing nginx, Apache, Caddy, or other service using those ports manually;
-- remove incorrect AAAA records, because they can break certificate validation;
-- for Cloudflare, use DNS-only mode during initial certificate issuance, then enable proxying only after it is configured correctly.
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium ILB_ACCESS_MODE=sslip bash
+```
 
-Domain-enabled browser ports are bound to loopback only; public traffic enters through Caddy. The browser username and password are still required. View proxy logs with:
+[sslip.io](https://sslip.io/) is a third-party DNS service, and the generated hostname exposes the server IP. Inbound TCP ports `80` and `443` must be publicly reachable. Public CA or sslip.io rate limits may prevent certificate issuance; use a custom domain for stable long-term production deployments.
+
+### Custom-domain mode
+
+Set `ILB_ACCESS_MODE=domain` with `ILB_DOMAIN`; `ILB_ACME_EMAIL` is optional. Supplying a non-empty `ILB_DOMAIN` without `ILB_ACCESS_MODE` still selects domain mode for backward compatibility.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Mammad3861/Instant-Linux-Browser/main/browser.sh | sudo ILB_ACTION=install-chromium ILB_ACCESS_MODE=domain ILB_DOMAIN=browser.example.com ILB_ACME_EMAIL=admin@example.com bash
+```
+
+Point the domain's DNS records to the server, remove incorrect AAAA records, and ensure inbound TCP ports `80` and `443` are available. Handle any existing nginx, Apache, Caddy, or other service using those ports manually. For Cloudflare, use DNS-only mode during initial certificate issuance.
+
+Both sslip.io and custom-domain modes use [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https), bind browser ports to loopback, and share the project-managed Caddy container. Browser authentication remains enabled. View proxy logs with:
 
 ```bash
 docker logs instant-linux-browser-caddy
@@ -161,14 +175,14 @@ Uninstall removes the container but keeps persistent config:
 /opt/instant-linux-browser/proxy
 ```
 
-Domain-route cleanup reuses Caddy while another browser route remains and removes only the project-owned Caddy container after the last route is removed. Browser profiles and persistent Caddy certificate/configuration data are kept. Delete those directories manually only if you no longer need them.
+Caddy route cleanup reuses Caddy while another browser route remains and removes only the project-owned Caddy container after the last route is removed. Browser profiles and persistent Caddy certificate/configuration data are kept. Delete those directories manually only if you no longer need them.
 
 ## Security
 
 If exposing the browser to the public internet:
 
 - use a strong password;
-- do not expose HTTP port `3000` directly; use it behind a reverse proxy;
+- do not expose HTTP ports `3000` or `4000` directly; use them behind a reverse proxy;
 - treat `CUSTOM_USER` and `PASSWORD` as basic protection for a trusted local network, not sufficient public Internet protection;
 - use HTTPS and a reverse proxy with robust authentication for public exposure;
 - restrict access with a firewall, VPN, or IP allow-list.
